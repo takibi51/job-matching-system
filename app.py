@@ -184,18 +184,6 @@ elif input_mode == "候補者CSVから選択" and candidates:
         format_func=lambda i: candidate_names[i],
     )
     selected = candidates[selected_idx]
-
-    # 保存ボタン
-    if st.sidebar.button("この候補者を保存", key="save_csv_cand"):
-        save_candidate(
-            selected.get("display_name", "候補者"),
-            selected.get("info", {}),
-            selected.get("strengths", []),
-            selected.get("conditions", {}),
-        )
-        st.sidebar.success("保存しました")
-        st.rerun()
-
     keywords, extra_keywords, salary_min, salary_max, age, location, prefer_kansai = \
         _show_candidate_sidebar(selected)
 
