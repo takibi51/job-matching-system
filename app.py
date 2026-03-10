@@ -33,6 +33,12 @@ from cache_manager import (
     save_interview_sheet, update_interview_sheet, get_interview_sheets, delete_interview_sheet,
     get_app_setting, set_app_setting,
 )
+from ai_generator import (
+    generate_scout_message, generate_concerns, generate_hireability,
+    generate_proposal_resume, generate_interview_analysis,
+    generate_progress_analysis, generate_job_improvements,
+    evaluate_market_fit, MARKET_FIT_AXES,
+)
 
 # ============================================================
 # ページ設定
@@ -138,14 +144,26 @@ def esc(text):
     return html.escape(str(text)) if text else ""
 
 
+def _get_label_thresholds():
+    """設定からラベル閾値を取得"""
+    defaults = {"recommended": 85, "good": 70}
+    saved = get_app_setting("label_thresholds", defaults)
+    return saved
+
+
 def _score_badge(score):
-    """スコアに応じたバッジHTML"""
-    if score >= 60:
-        cls, label = "score-high", "推奨"
-    elif score >= 30:
-        cls, label = "score-mid", "良好"
+    """スコアに応じたバッジHTML（4段階ラベル）"""
+    th = _get_label_thresholds()
+    rec = th.get("recommended", 85)
+    good = th.get("good", 70)
+    if score >= rec:
+        cls, label = "score-high", "かなり相性が良い"
+    elif score >= good:
+        cls, label = "score-high", "相性が良い"
+    elif score >= 55:
+        cls, label = "score-mid", "可能性あり"
     else:
-        cls, label = "score-low", "要確認"
+        cls, label = "score-low", "要検討"
     return f'<span class="score-badge {cls}">{score}点 {label}</span>'
 
 
@@ -174,10 +192,12 @@ st.sidebar.markdown("---")
 pages = {
     "candidate_search": "🔍 候補者検索",
     "job_search": "📋 求人票から検索",
+    "compare": "⚖️ 候補者比較",
     "interview": "📝 面談シート作成",
     "progress": "📊 提案済み（進捗）",
     "candidates": "👤 候補者管理",
     "data_mgmt": "📦 データ管理",
+    "settings": "⚙️ 設定",
     "search_links": "🌐 検索リンク",
 }
 
@@ -408,7 +428,6 @@ if page == "candidate_search":
                                 save_proposal(active_cand["id"], job.get("url", ""), "提案済み", "")
                                 st.success("提案を登録しました")
                                 st.rerun()
-                            # 面談シート確認
                             sheets = get_interview_sheets(active_cand["id"])
                             if sheets:
                                 act2.markdown(f"📝 面談シート: {len(sheets)}件")
@@ -416,6 +435,26 @@ if page == "candidate_search":
                                 act2.caption("面談シートなし")
                         if url and url.startswith("http"):
                             act3.link_button("🌐 求人ページ", url, key=f"cs_jext_{i}")
+
+                        # AI機能
+                        st.markdown("**🤖 AIアシスタント**")
+                        ai1, ai2, ai3, ai4 = st.columns(4)
+                        if active_cand:
+                            if ai1.button("📝 スカウト文", key=f"cs_ai_scout_{i}"):
+                                st.session_state[f"ai_scout_{i}"] = generate_scout_message(active_cand)
+                            if ai2.button("⚠️ 懸念点", key=f"cs_ai_conc_{i}"):
+                                st.session_state[f"ai_conc_{i}"] = generate_concerns(active_cand)
+                            if ai3.button("📈 決まりやすさ", key=f"cs_ai_hire_{i}"):
+                                st.session_state[f"ai_hire_{i}"] = generate_hireability(active_cand)
+                            if ai4.button("📋 推薦文", key=f"cs_ai_resume_{i}"):
+                                st.session_state[f"ai_resume_{i}"] = generate_proposal_resume(active_cand, job)
+                        # AI結果表示
+                        for ai_key in [f"ai_scout_{i}", f"ai_conc_{i}", f"ai_hire_{i}", f"ai_resume_{i}"]:
+                            if st.session_state.get(ai_key):
+                                st.markdown(st.session_state[ai_key])
+                                if st.button("閉じる", key=f"close_{ai_key}"):
+                                    del st.session_state[ai_key]
+                                    st.rerun()
 
                 # テーブル＆ダウンロード
                 with st.expander(f"📊 全件テーブル表示（{len(filtered)}件）"):
@@ -537,8 +576,16 @@ elif page == "job_search":
                 </div>""", unsafe_allow_html=True)
 
                 url = job.get("url", "")
+                jl1, jl2 = st.columns(2)
                 if url and url.startswith("http"):
-                    st.link_button("求人ページを開く", url, key=f"js_link_{i}")
+                    jl1.link_button("求人ページを開く", url, key=f"js_link_{i}")
+                if jl2.button("💡 求人改善提案", key=f"js_ai_imp_{i}"):
+                    st.session_state[f"js_imp_{i}"] = generate_job_improvements(job)
+                if st.session_state.get(f"js_imp_{i}"):
+                    st.markdown(st.session_state[f"js_imp_{i}"])
+                    if st.button("閉じる", key=f"close_js_imp_{i}"):
+                        del st.session_state[f"js_imp_{i}"]
+                        st.rerun()
 
                 # 各候補者とのマッチスコアを算出
                 st.markdown("**マッチする候補者:**")
@@ -593,7 +640,6 @@ elif page == "job_search":
                                 save_proposal(cand["id"], job.get("url", ""), "提案済み", "")
                                 st.success("提案を登録しました")
                                 st.rerun()
-                            # 面談シート確認
                             cand_sheets = get_interview_sheets(cand["id"])
                             if cand_sheets:
                                 ja2.markdown(f"📝 面談シート: {len(cand_sheets)}件")
@@ -602,6 +648,23 @@ elif page == "job_search":
                         job_url_link = job.get("url", "")
                         if job_url_link and job_url_link.startswith("http"):
                             ja3.link_button("🌐 求人ページ", job_url_link, key=f"js_jext_{i}_{cand.get('id',0)}")
+
+                        # AI機能
+                        st.markdown("**🤖 AIアシスタント**")
+                        jb1, jb2, jb3 = st.columns(3)
+                        cid = cand.get("id", 0)
+                        if jb1.button("📝 スカウト文", key=f"js_ai_sc_{i}_{cid}"):
+                            st.session_state[f"js_scout_{i}_{cid}"] = generate_scout_message(cand)
+                        if jb2.button("📋 推薦文", key=f"js_ai_res_{i}_{cid}"):
+                            st.session_state[f"js_resume_{i}_{cid}"] = generate_proposal_resume(cand, job)
+                        if jb3.button("📈 決まりやすさ", key=f"js_ai_hr_{i}_{cid}"):
+                            st.session_state[f"js_hire_{i}_{cid}"] = generate_hireability(cand)
+                        for jk in [f"js_scout_{i}_{cid}", f"js_resume_{i}_{cid}", f"js_hire_{i}_{cid}"]:
+                            if st.session_state.get(jk):
+                                st.markdown(st.session_state[jk])
+                                if st.button("閉じる", key=f"close_{jk}"):
+                                    del st.session_state[jk]
+                                    st.rerun()
 
                 if not any(sc >= 10 for _, sc, _ in cand_scores):
                     st.caption("マッチする候補者が見つかりませんでした")
@@ -690,9 +753,12 @@ elif page == "candidates":
 
     if saved_cands:
         for cand in saved_cands:
+            mf = evaluate_market_fit(cand)
+            star_html = ' <span style="color:#f59e0b;">⭐ 決まりやすい</span>' if mf["has_star"] else ""
             st.markdown(f"""
             <div class="cand-card">
                 <strong style="font-size:1.05rem;">{esc(cand.get('name','候補者'))}</strong>
+                {star_html}
                 <span style="color:#a0aec0; margin-left:1rem; font-size:0.8rem;">
                     登録: {esc(cand.get('created_at','')[:10])}
                 </span>
@@ -1095,6 +1161,18 @@ elif page == "interview":
 
                     sheet_content = "\n".join(sheet_parts)
 
+                    # AI解析レポートも生成
+                    ai_result = generate_interview_analysis(raw_input, iv_cand)
+                    ai_tags = ai_result.get("tags", [])
+                    # タグをマージ（手動 + AI抽出）
+                    for at in ai_tags:
+                        tag_clean = at.lstrip("#")
+                        if tag_clean not in tags:
+                            tags.append(tag_clean)
+
+                    # AI解析レポートをシートに統合
+                    sheet_content += "\n\n" + ai_result.get("report", "")
+
                     # 保存
                     sheet_id = save_interview_sheet(
                         iv_cand["id"], raw_input, sheet_content, tags
@@ -1382,3 +1460,281 @@ elif page == "progress":
                     delete_proposal(p["id"])
                     st.success("削除しました")
                     st.rerun()
+
+                # AI進捗分析
+                st.markdown("---")
+                if st.button("🤖 進捗分析レポート", key=f"pr_ai_{p['id']}"):
+                    proposal_data = {**p, "job_title": job_title}
+                    analysis = generate_progress_analysis(proposal_data, cand_info if cand_info else None)
+                    st.session_state[f"pr_analysis_{p['id']}"] = analysis
+                if st.session_state.get(f"pr_analysis_{p['id']}"):
+                    st.markdown(st.session_state[f"pr_analysis_{p['id']}"])
+                    if st.button("閉じる", key=f"close_pr_analysis_{p['id']}"):
+                        del st.session_state[f"pr_analysis_{p['id']}"]
+                        st.rerun()
+
+
+# ============================================================
+# ページ8: 候補者比較（最大3名）
+# ============================================================
+elif page == "compare":
+    st.markdown("## ⚖️ 候補者比較")
+    st.caption("最大3名の候補者を並べて比較できます")
+
+    if len(saved_cands) < 2:
+        st.markdown('<div class="empty-state"><h3>候補者が2名以上必要です</h3>'
+                    '<p>「👤 候補者管理」から候補者を追加してください</p></div>',
+                    unsafe_allow_html=True)
+    else:
+        cand_names = [c["name"] for c in saved_cands]
+
+        cc1, cc2, cc3 = st.columns(3)
+        sel1 = cc1.selectbox("候補者1", ["--"] + cand_names, key="cmp_1")
+        sel2 = cc2.selectbox("候補者2", ["--"] + cand_names, key="cmp_2")
+        sel3 = cc3.selectbox("候補者3（任意）", ["--"] + cand_names, key="cmp_3")
+
+        selected = []
+        for sel_name in [sel1, sel2, sel3]:
+            if sel_name != "--":
+                c = next((c for c in saved_cands if c["name"] == sel_name), None)
+                if c:
+                    selected.append(c)
+
+        # 求人を選んでスコア計算
+        compare_job = None
+        if stats["total_jobs"] > 0:
+            with st.expander("📋 特定の求人でスコアを比較", expanded=False):
+                cmp_kw = st.text_input("求人を検索", placeholder="キーワード", key="cmp_job_kw")
+                if cmp_kw.strip():
+                    cmp_jobs = search_jobs(cmp_kw)
+                else:
+                    cmp_jobs = get_all_jobs(limit=30)
+                if cmp_jobs:
+                    cmp_job_opts = [f"{j.get('title','不明')} - {j.get('company','')}" for j in cmp_jobs[:20]]
+                    cmp_sel = st.selectbox("求人", ["--"] + cmp_job_opts, key="cmp_job_sel")
+                    if cmp_sel != "--":
+                        cmp_idx = cmp_job_opts.index(cmp_sel)
+                        compare_job = cmp_jobs[cmp_idx]
+
+        if len(selected) >= 2:
+            st.markdown("---")
+            cols = st.columns(len(selected))
+
+            for idx, (col, cand) in enumerate(zip(cols, selected)):
+                info = cand.get("info", {})
+                strengths = cand.get("strengths", [])
+                conditions = cand.get("conditions", {})
+
+                # Market Fit評価
+                mf = evaluate_market_fit(cand)
+
+                # 求人選択時はスコア計算
+                score_val = None
+                if compare_job:
+                    cond = _cand_to_conditions(cand)
+                    score_val, reasons = score_job(compare_job, cond)
+
+                with col:
+                    st.markdown(f"### {esc(cand.get('name', '候補者'))}")
+                    if mf["has_star"]:
+                        st.markdown("⭐ **Market Fit**")
+
+                    if score_val is not None:
+                        st.markdown(_score_badge(score_val), unsafe_allow_html=True)
+                        st.markdown(_match_bar(score_val), unsafe_allow_html=True)
+
+                    st.markdown("**基本情報**")
+                    for k, v in list(info.items())[:5]:
+                        st.caption(f"{k}: {v}")
+
+                    st.markdown("**強み**")
+                    for s in strengths[:4]:
+                        if isinstance(s, (list, tuple)) and len(s) >= 2:
+                            st.caption(f"• {s[0]}")
+                        elif isinstance(s, str):
+                            st.caption(f"• {s}")
+
+                    st.markdown("**希望条件**")
+                    kws = conditions.get("keywords", [])
+                    st.caption(f"KW: {', '.join(kws[:3])}")
+                    st.caption(f"年収: {conditions.get('salary_min',0)}〜{conditions.get('salary_max',0)}万")
+                    st.caption(f"勤務地: {conditions.get('location','')}")
+
+                    # Market Fit 5軸
+                    st.markdown("**Market Fit 5軸**")
+                    for axis in MARKET_FIT_AXES:
+                        ax_val = mf["axes"].get(axis["id"], "neutral")
+                        icon = "🟢" if ax_val == "positive" else ("🟡" if ax_val == "neutral" else "🔴")
+                        st.caption(f"{icon} {axis['label']}")
+        else:
+            st.info("2名以上選択してください")
+
+
+# ============================================================
+# ページ9: 設定
+# ============================================================
+elif page == "settings":
+    st.markdown("## ⚙️ 設定")
+    st.caption("マッチングスコアの計算方法、ラベル表示、Market Fit評価のルールを設定します")
+
+    set_tabs = st.tabs(["🎯 スコア重み", "🏷️ ラベル閾値", "⭐ Market Fit", "🤖 AIプリセット"])
+
+    # --- スコア重み ---
+    with set_tabs[0]:
+        st.markdown("### スコア重み設定")
+        st.caption("4カテゴリの重みを設定します。合計は100になるよう調整してください。")
+
+        defaults_w = {"job": 35, "skill": 35, "soft": 20, "conditions": 10}
+        saved_w = get_app_setting("score_weights", defaults_w)
+
+        sw1, sw2 = st.columns(2)
+        w_job = sw1.number_input("職種一致度", min_value=0, max_value=100, value=saved_w.get("job", 35), step=5, key="sw_job")
+        w_skill = sw2.number_input("スキル一致度", min_value=0, max_value=100, value=saved_w.get("skill", 35), step=5, key="sw_skill")
+        sw3, sw4 = st.columns(2)
+        w_soft = sw3.number_input("ソフトスキル", min_value=0, max_value=100, value=saved_w.get("soft", 20), step=5, key="sw_soft")
+        w_cond = sw4.number_input("条件一致度", min_value=0, max_value=100, value=saved_w.get("conditions", 10), step=5, key="sw_cond")
+
+        total = w_job + w_skill + w_soft + w_cond
+        if total != 100:
+            st.warning(f"合計: {total}（100にしてください）")
+        else:
+            st.success(f"合計: {total} ✓")
+
+        if st.button("重みを保存", type="primary", key="sw_save"):
+            set_app_setting("score_weights", {"job": w_job, "skill": w_skill, "soft": w_soft, "conditions": w_cond})
+            st.success("保存しました")
+
+        # 現在の重みをビジュアル表示
+        st.markdown("**現在の配分:**")
+        import json as _json
+        bar_data = {"カテゴリ": ["職種一致", "スキル一致", "ソフトスキル", "条件一致"],
+                    "重み": [w_job, w_skill, w_soft, w_cond]}
+        st.bar_chart(pd.DataFrame(bar_data).set_index("カテゴリ"))
+
+    # --- ラベル閾値 ---
+    with set_tabs[1]:
+        st.markdown("### ラベル閾値設定")
+        st.caption("マッチ度スコアに応じたラベル表示の閾値を設定します")
+
+        defaults_l = {"recommended": 85, "good": 70}
+        saved_l = get_app_setting("label_thresholds", defaults_l)
+
+        st.markdown("""
+        | スコア範囲 | ラベル |
+        |-----------|--------|
+        | 閾値1以上 | かなり相性が良い |
+        | 閾値2〜閾値1 | 相性が良い |
+        | 55〜閾値2 | 可能性あり |
+        | 55未満 | 要検討 |
+        """)
+
+        lt1, lt2 = st.columns(2)
+        th_rec = lt1.number_input("閾値1（かなり相性が良い）", 50, 100, saved_l.get("recommended", 85), step=5, key="lt_rec")
+        th_good = lt2.number_input("閾値2（相性が良い）", 30, 100, saved_l.get("good", 70), step=5, key="lt_good")
+
+        # プレビュー
+        st.markdown("**プレビュー:**")
+        for test_score in [90, 80, 65, 40]:
+            if test_score >= th_rec:
+                label = "かなり相性が良い"
+            elif test_score >= th_good:
+                label = "相性が良い"
+            elif test_score >= 55:
+                label = "可能性あり"
+            else:
+                label = "要検討"
+            st.caption(f"{test_score}点 → {label}")
+
+        if st.button("閾値を保存", type="primary", key="lt_save"):
+            set_app_setting("label_thresholds", {"recommended": th_rec, "good": th_good})
+            st.success("保存しました")
+
+    # --- Market Fit ---
+    with set_tabs[2]:
+        st.markdown("### Market Fit ⭐ 評価ルール")
+        st.caption("5軸評価で候補者に⭐（決まりやすい）マークを付与するルールです")
+
+        defaults_mf = {"required_positives": 3, "block_on_major_negative": True}
+        saved_mf = get_app_setting("market_fit_rules", defaults_mf)
+
+        st.markdown("**5軸評価:**")
+        for axis in MARKET_FIT_AXES:
+            st.markdown(f"- {axis['label']} — {axis['desc']}")
+
+        mf1, mf2 = st.columns(2)
+        mf_req = mf1.number_input("⭐付与に必要なポジティブ軸数", 1, 5,
+                                   saved_mf.get("required_positives", 3), key="mf_req")
+        mf_block = mf2.checkbox("重大ネガティブ要因がある場合は⭐非付与",
+                                 value=saved_mf.get("block_on_major_negative", True), key="mf_block")
+
+        if st.button("Market Fitルールを保存", type="primary", key="mf_save"):
+            set_app_setting("market_fit_rules", {
+                "required_positives": mf_req,
+                "block_on_major_negative": mf_block,
+            })
+            st.success("保存しました")
+
+        # 候補者のMarket Fit一覧
+        if saved_cands:
+            st.markdown("---")
+            st.markdown("### 候補者のMarket Fit状況")
+            for c in saved_cands:
+                mf = evaluate_market_fit(c)
+                star = "⭐" if mf["has_star"] else "—"
+                st.markdown(f"**{star} {c.get('name', '候補者')}** "
+                            f"（ポジティブ: {mf['positive_count']}/5, "
+                            f"ネガティブ: {'あり' if mf['has_major_negative'] else 'なし'}）")
+                if mf["reason"]:
+                    st.caption(mf["reason"])
+
+    # --- AIプリセット ---
+    with set_tabs[3]:
+        st.markdown("### AIプリセット管理")
+        st.caption("各画面で表示されるAIサジェストボタンのプリセットを管理します")
+
+        defaults_ai = {
+            "candidateSearch": ["💬 コミュニケーション能力が高い人だけ表示", "💪 メンタルが強い人だけ表示", "🚀 ベンチャーマインドが強い人だけ表示"],
+            "jobSearch": ["💬 コミュニケーション能力が高い人だけ表示", "💪 メンタルが強い人だけ表示"],
+            "interviewSheet": ["🎯 カルチャーフィットしそうな求人順に並べて", "💡 必須が当てはまらなくても可能性が高そうな求人は？"],
+            "proposals": ["🚨 急ぎ確認必要な進捗を教えて", "⏸️ 動いていない進捗を教えて"],
+        }
+        saved_ai = get_app_setting("ai_presets", defaults_ai)
+
+        preset_labels = {
+            "candidateSearch": "候補者検索",
+            "jobSearch": "求人検索",
+            "interviewSheet": "面談シート",
+            "proposals": "提案管理",
+        }
+
+        for preset_key, preset_label in preset_labels.items():
+            st.markdown(f"**{preset_label}プリセット:**")
+            current = saved_ai.get(preset_key, defaults_ai.get(preset_key, []))
+            new_val = st.text_area(
+                f"{preset_label}（1行1プリセット）",
+                value="\n".join(current),
+                height=80,
+                key=f"ai_preset_{preset_key}",
+            )
+            saved_ai[preset_key] = [l.strip() for l in new_val.split("\n") if l.strip()]
+
+        if st.button("AIプリセットを保存", type="primary", key="ai_save"):
+            set_app_setting("ai_presets", saved_ai)
+            st.success("保存しました")
+
+        # 理由プール
+        st.markdown("---")
+        st.markdown("### マッチ理由プール")
+        defaults_reasons = [
+            "職種経験が豊富", "顧客折衝が強い", "改善推進が得意",
+            "リーダーシップあり", "コミュニケーション能力が高い", "論理的思考力がある",
+            "チームワークを重視", "自走力がある", "学習意欲が高い",
+            "柔軟性がある", "ストレス耐性が高い", "目標達成意識が強い",
+        ]
+        saved_reasons = get_app_setting("reasons_pool", defaults_reasons)
+        reasons_text = st.text_area("理由プール（1行1理由）",
+                                     value="\n".join(saved_reasons), height=150, key="reasons_pool")
+        if st.button("理由プールを保存", type="primary", key="rp_save"):
+            parsed = [l.strip() for l in reasons_text.split("\n") if l.strip()]
+            set_app_setting("reasons_pool", parsed)
+            st.success("保存しました")
