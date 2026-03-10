@@ -134,7 +134,7 @@ def fetch_recruit_agent(keyword: str, location: str = "") -> List[Dict]:
             company = item.get("companyName", "")
             salary = item.get("salary", "")
             work_location = item.get("workLocation", "") or location
-            url = f"https://www.r-agent.com/kensaku/detail/{jkey}/"
+            url = f"https://www.r-agent.com/viewjob/{jkey}/"
 
             jobs.append({
                 "title": title[:100],
