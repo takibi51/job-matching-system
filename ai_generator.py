@@ -588,6 +588,171 @@ def generate_job_improvements(job):
 # Market Fit ⭐ 5軸評価
 # ============================================================
 
+# ============================================================
+# 8. 自然文チャット応答（generateChatResponse）
+# ============================================================
+
+def generate_chat_response(message, context=None):
+    """
+    自然言語メッセージに対してコンサルタント風の応答を返す。
+    context: { "candidate": dict or None, "job": dict or None, "tab": str }
+    """
+    context = context or {}
+    candidate = context.get("candidate")
+    job = context.get("job")
+    tab = context.get("tab", "")
+    msg_lower = message.lower()
+
+    # --- インテント検出 ---
+
+    # スカウト文
+    if any(w in msg_lower for w in ["スカウト", "メッセージ", "声かけ"]):
+        if candidate:
+            return generate_scout_message(candidate)
+        return "💡 候補者を選択した状態で「スカウト文を提案して」とお伝えください。選択された候補者に合わせたスカウトメッセージを作成します。"
+
+    # 懸念点
+    if any(w in msg_lower for w in ["懸念", "リスク", "確認質問", "心配", "気になる"]):
+        if candidate:
+            return generate_concerns(candidate)
+        return "💡 候補者を選択すると、その方に関する懸念点の分析と確認質問を生成します。"
+
+    # 決まりやすさ
+    if any(w in msg_lower for w in ["決まり", "市場価値", "採用可能性", "内定"]):
+        if candidate:
+            return generate_hireability(candidate)
+        return "💡 候補者を選択すると、市場での決まりやすさを分析します。"
+
+    # 推薦文
+    if any(w in msg_lower for w in ["推薦", "レジュメ", "紹介文"]):
+        if candidate:
+            return generate_proposal_resume(candidate, job)
+        return "💡 候補者を選択した状態で「推薦文を作成して」とお伝えください。"
+
+    # 求人改善
+    if any(w in msg_lower for w in ["改善", "求人票", "応募", "表現"]):
+        if job:
+            return generate_job_improvements(job)
+        return "💡 求人を選択した状態で「求人票を改善して」とお伝えください。"
+
+    # 面談分析
+    if any(w in msg_lower for w in ["面談", "面接", "分析", "解析"]):
+        if candidate:
+            return f"""面談分析のサポートが可能です。
+
+「📝 面談分析」タブで面談内容をテキスト入力していただくと、以下を自動生成します：
+
+• **マッチングタグ**: 候補者の特性をキーワード化
+• **決定シナリオ予測**: 口説き文句・キャリアパス提案
+• **深掘り質問案**: 次回面談で確認すべきポイント
+
+候補者「{candidate.get('name', '')}」様の面談メモがあれば、こちらに入力してください。"""
+        return "💡 「面談分析」タブで候補者を選択し、面談メモを入力すると、AI分析レポートを生成します。"
+
+    # 進捗・提案
+    if any(w in msg_lower for w in ["進捗", "提案", "ステータス", "停滞", "動いてない"]):
+        return f"""提案の進捗管理についてサポートします。
+
+📊 **確認可能な情報:**
+• 全提案のステータス一覧
+• 停滞している案件のアラート
+• 次アクションの推奨
+
+「提案管理」タブで個別の提案を選択すると、詳しい進捗分析レポートも生成できます。何か特定の案件についてお聞きになりたいことはありますか？"""
+
+    # 比較
+    if any(w in msg_lower for w in ["比較", "どっち", "どちら", "違い"]):
+        if candidate:
+            f = _get_candidate_fields(candidate)
+            return f"""**{f['name']}様の特徴サマリ:**
+
+• 職種: {f['job_type']}（経験{f['experience']}）
+• スキル: {', '.join(f['hard_skills'][:4])}
+• 希望年収: {f['salary']}
+• 市場スコア: {f['market_score']}%
+
+他の候補者と比較するには、「候補者検索」タブで複数選択してください。具体的な比較軸（年収、スキル、カルチャーフィットなど）を指定していただくとより詳しく分析できます。"""
+        return "💡 比較したい候補者を選択してください。最大3名までの並列比較が可能です。"
+
+    # 年収・条件
+    if any(w in msg_lower for w in ["年収", "給与", "条件", "オファー"]):
+        if candidate:
+            f = _get_candidate_fields(candidate)
+            return f"""{_phrase('opening')}、{f['name']}様への条件提示について分析します。
+
+**現在の市場データ:**
+• 候補者の希望年収: {f['salary']}
+• 市場スコア: {f['market_score']}%（{'競争力のある候補者' if f['market_score'] >= 70 else '条件次第'}）
+
+**推奨オファー戦略:**
+{'• 市場スコアが高いため、希望年収に近い提示が望ましいです' if f['market_score'] >= 70 else '• 希望年収の下限付近からの提示で交渉の余地を確保できます'}
+• 年収以外の魅力（成長環境、裁量、リモート等）を積極的にアピール
+• 他社選考状況を確認し、スピード感のある対応を推奨"""
+        return "💡 候補者を選択すると、適正年収や条件提示の戦略を分析できます。"
+
+    # あいさつ
+    if any(w in msg_lower for w in ["こんにちは", "おはよう", "はじめまして", "hello", "hi"]):
+        return f"""こんにちは！Matchアシスタントです。
+
+以下のサポートが可能です：
+
+**📋 候補者サポート**
+• 「スカウト文を提案して」→ パーソナライズされたスカウトメッセージ
+• 「懸念点を分析して」→ リスク分析と確認質問
+• 「決まりやすさを教えて」→ 市場価値分析
+• 「推薦文を作成して」→ 企業向け推薦状
+
+**📋 求人サポート**
+• 「求人票を改善して」→ 応募数増加のための改善提案
+
+**💡 ヒント**
+候補者や求人を選択した状態で質問すると、より具体的なアドバイスが可能です。"""
+
+    # ヘルプ・使い方
+    if any(w in msg_lower for w in ["ヘルプ", "使い方", "何ができる", "機能", "help"]):
+        return """**Matchアシスタントの機能一覧：**
+
+🔍 **候補者関連**
+• スカウト文の生成
+• 懸念点の分析・確認質問の作成
+• 市場価値・決まりやすさの分析
+• 推薦文の作成
+
+📋 **求人関連**
+• 求人票の改善提案
+• 候補者とのマッチング分析
+
+📝 **面談関連**
+• 面談メモの構造化
+• タグの自動抽出
+• 深掘り質問の提案
+
+📊 **提案管理**
+• 進捗の停滞分析
+• 次アクションの推奨
+
+自由に質問してください。候補者・求人を選択した状態だとより具体的な回答が可能です。"""
+
+    # --- デフォルト応答（汎用） ---
+    ctx_info = ""
+    if candidate:
+        f = _get_candidate_fields(candidate)
+        ctx_info = f"\n\n現在選択中: **{f['name']}様**（{f['job_type']}、経験{f['experience']}）"
+    if job:
+        ctx_info += f"\n選択中の求人: **{job.get('title', '')}**"
+
+    return f"""ご質問ありがとうございます。{ctx_info}
+
+以下のサポートが可能です。具体的にお伝えいただければ詳しく回答します：
+
+• 📝 **候補者サポート**: 「スカウト文を提案して」「懸念点を分析して」「決まりやすさを教えて」
+• 📋 **求人サポート**: 「求人票を改善して」
+• 📊 **分析**: 「この人の年収いくらで提示すべき？」「比較して」
+• 💡 **一般**: 採用戦略、面談の進め方など
+
+お気軽にどうぞ！"""
+
+
 MARKET_FIT_AXES = [
     {"id": "demandFit", "label": "📈 市場需要一致度", "desc": "現在の市場で需要がある人材か"},
     {"id": "friction", "label": "🔄 条件摩擦の少なさ", "desc": "希望条件と市場相場のギャップが小さいか"},
