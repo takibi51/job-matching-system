@@ -29,6 +29,9 @@ from cache_manager import (
     get_keywords, add_keyword, remove_keyword, get_enabled_keywords,
     add_collection_log, get_collection_logs,
     save_candidate, get_saved_candidates, delete_candidate,
+    save_proposal, update_proposal_status, get_proposals, delete_proposal, PROPOSAL_STATUSES,
+    save_interview_sheet, update_interview_sheet, get_interview_sheets, delete_interview_sheet,
+    get_app_setting, set_app_setting,
 )
 
 # ============================================================
@@ -171,6 +174,8 @@ st.sidebar.markdown("---")
 pages = {
     "candidate_search": "🔍 候補者検索",
     "job_search": "📋 求人票から検索",
+    "interview": "📝 面談シート作成",
+    "progress": "📊 提案済み（進捗）",
     "candidates": "👤 候補者管理",
     "data_mgmt": "📦 データ管理",
     "search_links": "🌐 検索リンク",
@@ -393,7 +398,24 @@ if page == "candidate_search":
                                     st.markdown(f"- {r}")
                             url = job.get("url", "")
                             if url and url.startswith("http"):
-                                st.link_button("求人ページを開く", url)
+                                st.link_button("求人ページを開く", url, key=f"cs_jlink_{i}")
+
+                        # アクションボタン
+                        st.markdown("---")
+                        act1, act2, act3 = st.columns(3)
+                        if active_cand and active_cand.get("id"):
+                            if act1.button("📊 提案登録", key=f"cs_prop_{i}"):
+                                save_proposal(active_cand["id"], job.get("url", ""), "提案済み", "")
+                                st.success("提案を登録しました")
+                                st.rerun()
+                            # 面談シート確認
+                            sheets = get_interview_sheets(active_cand["id"])
+                            if sheets:
+                                act2.markdown(f"📝 面談シート: {len(sheets)}件")
+                            else:
+                                act2.caption("面談シートなし")
+                        if url and url.startswith("http"):
+                            act3.link_button("🌐 求人ページ", url, key=f"cs_jext_{i}")
 
                 # テーブル＆ダウンロード
                 with st.expander(f"📊 全件テーブル表示（{len(filtered)}件）"):
@@ -562,6 +584,24 @@ elif page == "job_search":
                             st.markdown(f"- キーワード: {', '.join(cc.get('keywords', []))}")
                             st.markdown(f"- 年収: {cc.get('salary_min',0)}〜{cc.get('salary_max',0)}万")
                             st.markdown(f"- 勤務地: {cc.get('location','')}")
+
+                        # アクションボタン
+                        st.markdown("---")
+                        ja1, ja2, ja3 = st.columns(3)
+                        if cand.get("id"):
+                            if ja1.button("📊 提案登録", key=f"js_prop_{i}_{cand['id']}"):
+                                save_proposal(cand["id"], job.get("url", ""), "提案済み", "")
+                                st.success("提案を登録しました")
+                                st.rerun()
+                            # 面談シート確認
+                            cand_sheets = get_interview_sheets(cand["id"])
+                            if cand_sheets:
+                                ja2.markdown(f"📝 面談シート: {len(cand_sheets)}件")
+                            else:
+                                ja2.caption("面談シートなし")
+                        job_url_link = job.get("url", "")
+                        if job_url_link and job_url_link.startswith("http"):
+                            ja3.link_button("🌐 求人ページ", job_url_link, key=f"js_jext_{i}_{cand.get('id',0)}")
 
                 if not any(sc >= 10 for _, sc, _ in cand_scores):
                     st.caption("マッチする候補者が見つかりませんでした")
@@ -911,3 +951,434 @@ elif page == "search_links":
         st.markdown(link_html, unsafe_allow_html=True)
     else:
         st.info("キーワードを入力してください")
+
+
+# ============================================================
+# ページ6: 面談シート作成
+# ============================================================
+elif page == "interview":
+    st.markdown("## 📝 面談シート作成")
+    st.caption("候補者との面談情報を構造化して記録・管理します")
+
+    iv_tabs = st.tabs(["✏️ 新規作成", "📋 シート一覧"])
+
+    # --- 新規作成 ---
+    with iv_tabs[0]:
+        if not saved_cands:
+            st.markdown('<div class="empty-state"><h3>候補者が登録されていません</h3>'
+                        '<p>「👤 候補者管理」から候補者を追加してください</p></div>',
+                        unsafe_allow_html=True)
+        else:
+            # 候補者選択
+            iv_cand_options = [f"{c['name']}（ID:{c['id']}）" for c in saved_cands]
+            iv_sel = st.selectbox("対象候補者", iv_cand_options, key="iv_cand_sel")
+            iv_sel_idx = iv_cand_options.index(iv_sel) if iv_sel else 0
+            iv_cand = saved_cands[iv_sel_idx]
+
+            # 候補者情報サマリー
+            with st.expander("👤 候補者情報", expanded=False):
+                ci = iv_cand.get("info", {})
+                cs = iv_cand.get("strengths", [])
+                ic1, ic2 = st.columns(2)
+                with ic1:
+                    st.markdown("**基本情報**")
+                    for k, v in ci.items():
+                        st.markdown(f"- **{k}**: {v}")
+                with ic2:
+                    st.markdown("**強み・スキル**")
+                    for s in cs[:5]:
+                        if isinstance(s, (list, tuple)) and len(s) >= 2:
+                            st.markdown(f"- **{s[0]}**: {s[1][:60]}")
+                        elif isinstance(s, str):
+                            st.markdown(f"- {s}")
+
+            st.markdown("---")
+
+            # 面談メモ入力
+            st.markdown("### 面談内容を入力")
+            raw_input = st.text_area(
+                "面談メモ（自由記述）",
+                height=250,
+                placeholder="面談で聞き取った内容をそのまま入力してください。\n"
+                            "例:\n"
+                            "- 現職: ○○クリニックで3年勤務\n"
+                            "- 転職理由: キャリアアップしたい\n"
+                            "- 希望年収: 400万〜\n"
+                            "- 希望勤務地: 大阪市内\n"
+                            "- 人柄: 明るく協調性がある",
+                key="iv_raw_input",
+            )
+
+            # タグ入力
+            tag_input = st.text_input(
+                "タグ（カンマ区切り）",
+                placeholder="例: 医療事務, 即日可, 大阪希望, 経験3年以上, 管理職志向",
+                key="iv_tags",
+            )
+
+            if st.button("面談シートを生成", type="primary", key="iv_generate"):
+                if not raw_input.strip():
+                    st.error("面談内容を入力してください")
+                else:
+                    # 面談シートを構造化して生成
+                    tags = [t.strip() for t in tag_input.split(",") if t.strip()] if tag_input else []
+
+                    # 入力テキストから自動タグ抽出
+                    auto_tag_patterns = {
+                        "即日可": ["即日", "すぐ", "急ぎ"],
+                        "大阪希望": ["大阪"],
+                        "東京希望": ["東京"],
+                        "リモート希望": ["リモート", "在宅"],
+                        "管理職志向": ["管理職", "マネジメント", "リーダー"],
+                        "未経験": ["未経験"],
+                        "医療系": ["医療", "クリニック", "病院", "看護"],
+                        "IT系": ["エンジニア", "プログラマ", "SE", "IT"],
+                        "営業経験": ["営業"],
+                        "年収重視": ["年収", "給与", "高収入"],
+                    }
+                    for tag_name, keywords in auto_tag_patterns.items():
+                        if tag_name not in tags:
+                            for kw in keywords:
+                                if kw in raw_input:
+                                    tags.append(tag_name)
+                                    break
+
+                    # 構造化シート生成
+                    lines = raw_input.strip().split("\n")
+                    sections = {
+                        "職歴・経験": [],
+                        "転職理由・動機": [],
+                        "希望条件": [],
+                        "スキル・資格": [],
+                        "人物像・印象": [],
+                        "その他": [],
+                    }
+
+                    current_section = "その他"
+                    section_keywords = {
+                        "職歴・経験": ["現職", "前職", "経験", "勤務", "年数", "業務", "職歴"],
+                        "転職理由・動機": ["転職理由", "動機", "理由", "退職", "辞め"],
+                        "希望条件": ["希望", "年収", "勤務地", "時間", "休日", "条件"],
+                        "スキル・資格": ["スキル", "資格", "免許", "言語", "ツール"],
+                        "人物像・印象": ["人柄", "印象", "性格", "雰囲気", "コミュニケーション"],
+                    }
+
+                    for line in lines:
+                        line_clean = line.strip()
+                        if not line_clean:
+                            continue
+                        matched_section = None
+                        for sec, kws in section_keywords.items():
+                            if any(kw in line_clean for kw in kws):
+                                matched_section = sec
+                                break
+                        if matched_section:
+                            current_section = matched_section
+                        sections[current_section].append(line_clean)
+
+                    # シート本文を組み立て
+                    sheet_parts = []
+                    sheet_parts.append(f"# 面談シート: {iv_cand.get('name', '候補者')}")
+                    sheet_parts.append(f"作成日: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+                    sheet_parts.append("")
+
+                    for sec_name, sec_lines in sections.items():
+                        if sec_lines:
+                            sheet_parts.append(f"## {sec_name}")
+                            for sl in sec_lines:
+                                sheet_parts.append(f"- {sl.lstrip('-').lstrip('・').strip()}")
+                            sheet_parts.append("")
+
+                    if tags:
+                        sheet_parts.append("## タグ")
+                        sheet_parts.append(", ".join(f"#{t}" for t in tags))
+
+                    sheet_content = "\n".join(sheet_parts)
+
+                    # 保存
+                    sheet_id = save_interview_sheet(
+                        iv_cand["id"], raw_input, sheet_content, tags
+                    )
+                    st.success(f"面談シートを保存しました（ID: {sheet_id}）")
+
+                    # プレビュー
+                    st.markdown("---")
+                    st.markdown("### 生成されたシート")
+                    st.markdown(sheet_content)
+
+                    if tags:
+                        tag_html = " ".join(f'<span class="fit-tag">#{esc(t)}</span>' for t in tags)
+                        st.markdown(tag_html, unsafe_allow_html=True)
+
+    # --- シート一覧 ---
+    with iv_tabs[1]:
+        all_sheets = get_interview_sheets()
+
+        if not all_sheets:
+            st.markdown('<div class="empty-state"><h3>面談シートがまだありません</h3>'
+                        '<p>「新規作成」タブから面談シートを作成してください</p></div>',
+                        unsafe_allow_html=True)
+        else:
+            # フィルタ
+            if saved_cands:
+                filter_options = ["全員"] + [c["name"] for c in saved_cands]
+                iv_filter = st.selectbox("候補者でフィルタ", filter_options, key="iv_filter")
+            else:
+                iv_filter = "全員"
+
+            # 候補者名マップ
+            cand_map = {c["id"]: c["name"] for c in saved_cands}
+
+            st.markdown(f"**{len(all_sheets)}件**の面談シート")
+
+            for sheet in all_sheets:
+                cand_name = cand_map.get(sheet["candidate_id"], f"候補者#{sheet['candidate_id']}")
+
+                if iv_filter != "全員" and cand_name != iv_filter:
+                    continue
+
+                tags = sheet.get("tags", [])
+                tag_html = " ".join(f'<span class="fit-tag">#{esc(t)}</span>' for t in tags) if tags else ""
+                created = sheet.get("created_at", "")[:16].replace("T", " ")
+
+                st.markdown(f"""
+                <div class="cand-card">
+                    <strong>{esc(cand_name)}</strong>
+                    <span style="color:#a0aec0; margin-left:1rem; font-size:0.8rem;">{created}</span>
+                    <div style="margin-top:0.3rem;">{tag_html}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                with st.expander(f"📋 シート詳細 - {cand_name}", expanded=False):
+                    st.markdown(sheet.get("sheet_content", "内容なし"))
+
+                    st.markdown("---")
+                    st.markdown("**元の入力:**")
+                    st.text(sheet.get("raw_input", "")[:500])
+
+                    sc1, sc2 = st.columns(2)
+                    # 編集
+                    edit_key = f"iv_edit_{sheet['id']}"
+                    if sc1.button("編集", key=f"iv_edit_btn_{sheet['id']}"):
+                        st.session_state[edit_key] = True
+
+                    if st.session_state.get(edit_key):
+                        new_content = st.text_area(
+                            "シート内容を編集",
+                            value=sheet.get("sheet_content", ""),
+                            height=200,
+                            key=f"iv_edit_ta_{sheet['id']}",
+                        )
+                        new_tags = st.text_input(
+                            "タグ編集（カンマ区切り）",
+                            value=", ".join(tags),
+                            key=f"iv_edit_tags_{sheet['id']}",
+                        )
+                        if st.button("更新", type="primary", key=f"iv_update_{sheet['id']}"):
+                            parsed_tags = [t.strip() for t in new_tags.split(",") if t.strip()]
+                            update_interview_sheet(sheet["id"], new_content, parsed_tags)
+                            st.session_state[edit_key] = False
+                            st.success("更新しました")
+                            st.rerun()
+
+                    # 削除
+                    if sc2.button("削除", key=f"iv_del_{sheet['id']}"):
+                        delete_interview_sheet(sheet["id"])
+                        st.success("削除しました")
+                        st.rerun()
+
+
+# ============================================================
+# ページ7: 提案済み（進捗管理）
+# ============================================================
+elif page == "progress":
+    st.markdown("## 📊 提案済み（進捗管理）")
+    st.caption("候補者×求人の提案状況を管理します")
+
+    proposals = get_proposals()
+    cand_map = {c["id"]: c for c in saved_cands}
+
+    # --- 統計パイプライン ---
+    status_counts = {}
+    for s in PROPOSAL_STATUSES:
+        status_counts[s] = 0
+    for p in proposals:
+        s = p.get("status", "提案済み")
+        if s in status_counts:
+            status_counts[s] += 1
+
+    # パイプラインバー
+    if proposals:
+        pipeline_html = '<div style="display:flex; gap:4px; margin-bottom:1rem;">'
+        colors = ["#667eea", "#4facfe", "#43e97b", "#38f9d7", "#f9d423", "#ff6b6b", "#ee5a24", "#6c5ce7"]
+        for i, (status, count) in enumerate(status_counts.items()):
+            color = colors[i % len(colors)]
+            pipeline_html += f"""
+            <div style="flex:1; text-align:center; padding:0.5rem; border-radius:8px;
+                         background:{color}20; border:2px solid {color};">
+                <div style="font-size:1.5rem; font-weight:800; color:{color};">{count}</div>
+                <div style="font-size:0.7rem; color:#4a5568;">{esc(status)}</div>
+            </div>"""
+        pipeline_html += '</div>'
+        st.markdown(pipeline_html, unsafe_allow_html=True)
+
+    # --- 新規提案登録 ---
+    with st.expander("➕ 新しい提案を登録", expanded=False):
+        if not saved_cands:
+            st.info("候補者を先に登録してください")
+        elif stats["total_jobs"] == 0:
+            st.info("求人データを先に登録してください")
+        else:
+            pr_cand_options = [f"{c['name']}（ID:{c['id']}）" for c in saved_cands]
+            pr_cand_sel = st.selectbox("候補者", pr_cand_options, key="pr_cand")
+            pr_cand_idx = pr_cand_options.index(pr_cand_sel)
+            pr_cand_id = saved_cands[pr_cand_idx]["id"]
+
+            # 求人検索して選択
+            pr_job_kw = st.text_input("求人を検索", placeholder="キーワードで検索", key="pr_job_kw")
+            if pr_job_kw.strip():
+                pr_job_results = search_jobs(pr_job_kw)
+            else:
+                pr_job_results = get_all_jobs(limit=50)
+
+            if pr_job_results:
+                pr_job_options = [
+                    f"{j.get('title','不明')} - {j.get('company','')}"
+                    for j in pr_job_results[:30]
+                ]
+                pr_job_sel = st.selectbox("求人を選択", pr_job_options, key="pr_job")
+                pr_job_idx = pr_job_options.index(pr_job_sel)
+                pr_job = pr_job_results[pr_job_idx]
+
+                pr_status = st.selectbox("ステータス", PROPOSAL_STATUSES, key="pr_status")
+                pr_memo = st.text_input("メモ", placeholder="備考など", key="pr_memo")
+
+                if st.button("提案を登録", type="primary", key="pr_save"):
+                    save_proposal(pr_cand_id, pr_job.get("url", ""), pr_status, pr_memo)
+                    st.success("提案を登録しました")
+                    st.rerun()
+
+    # --- 提案一覧 ---
+    st.markdown("---")
+
+    if not proposals:
+        st.markdown('<div class="empty-state"><h3>提案がまだありません</h3>'
+                    '<p>上の「新しい提案を登録」から追加してください</p></div>',
+                    unsafe_allow_html=True)
+    else:
+        # フィルタ
+        pf1, pf2, pf3 = st.columns(3)
+        pr_filter_status = pf1.multiselect("ステータス", PROPOSAL_STATUSES,
+                                            default=PROPOSAL_STATUSES, key="pr_fstatus")
+        if saved_cands:
+            pr_filter_cand_opts = ["全員"] + [c["name"] for c in saved_cands]
+            pr_filter_cand = pf2.selectbox("候補者", pr_filter_cand_opts, key="pr_fcand")
+        else:
+            pr_filter_cand = "全員"
+        pr_sort = pf3.selectbox("並び替え", ["更新日順", "ステータス順"], key="pr_sort")
+
+        # フィルタ適用
+        filtered_proposals = []
+        for p in proposals:
+            if p.get("status", "") not in pr_filter_status:
+                continue
+            cand_name = cand_map.get(p["candidate_id"], {}).get("name", f"候補者#{p['candidate_id']}")
+            if pr_filter_cand != "全員" and cand_name != pr_filter_cand:
+                continue
+            filtered_proposals.append(p)
+
+        if pr_sort == "ステータス順":
+            filtered_proposals.sort(key=lambda x: PROPOSAL_STATUSES.index(x.get("status", "提案済み"))
+                                    if x.get("status", "提案済み") in PROPOSAL_STATUSES else 99)
+
+        st.markdown(f"**{len(filtered_proposals)}件**の提案")
+
+        for p in filtered_proposals:
+            cand_info = cand_map.get(p["candidate_id"], {})
+            cand_name = cand_info.get("name", f"候補者#{p['candidate_id']}")
+
+            # 求人情報取得（URLで検索）
+            job_url = p.get("job_url", "")
+            job_info = None
+            if job_url:
+                from cache_manager import _get_conn
+                conn = _get_conn()
+                row = conn.execute("SELECT * FROM jobs WHERE url = ?", (job_url,)).fetchone()
+                if row:
+                    job_info = dict(row)
+
+            job_title = job_info.get("title", "不明") if job_info else "不明"
+            job_company = job_info.get("company", "") if job_info else ""
+            status = p.get("status", "提案済み")
+            updated = p.get("updated_at", "")[:16].replace("T", " ")
+
+            # ステータスの色
+            status_color_map = {
+                "提案済み": "#667eea", "カジュアル面談": "#4facfe",
+                "一次面接": "#43e97b", "二次面接": "#38f9d7",
+                "三次面接": "#f9d423", "内定": "#ff6b6b",
+                "内定承諾": "#ee5a24", "決定": "#6c5ce7",
+            }
+            s_color = status_color_map.get(status, "#667eea")
+
+            st.markdown(f"""
+            <div class="job-card">
+                <span style="display:inline-block; padding:0.2rem 0.7rem; border-radius:12px;
+                             background:{s_color}20; color:{s_color}; font-weight:700; font-size:0.85rem;">
+                    {esc(status)}
+                </span>
+                <span style="color:#a0aec0; font-size:0.8rem; margin-left:0.5rem;">{updated}</span>
+                <div style="margin-top:0.4rem;">
+                    <strong>👤 {esc(cand_name)}</strong>
+                    &nbsp;→&nbsp;
+                    <strong>📋 {esc(job_title)}</strong>
+                    {f' ({esc(job_company)})' if job_company else ''}
+                </div>
+                {f'<div style="color:#718096; font-size:0.85rem; margin-top:0.2rem;">📝 {esc(p.get("memo",""))}</div>' if p.get("memo") else ''}
+                {f'<div style="color:#4a5568; font-size:0.85rem;">⏭️ 次: {esc(p.get("next_action",""))}</div>' if p.get("next_action") else ''}
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.expander(f"⚙️ 操作 - {cand_name} × {job_title[:20]}", expanded=False):
+                # 候補者詳細
+                if cand_info and cand_info.get("info"):
+                    st.markdown("**👤 候補者情報:**")
+                    ci = cand_info.get("info", {})
+                    for k, v in list(ci.items())[:5]:
+                        st.markdown(f"- **{k}**: {v}")
+
+                # 求人詳細
+                if job_info:
+                    st.markdown("**📋 求人情報:**")
+                    st.markdown(f"- タイトル: {job_info.get('title','')}")
+                    st.markdown(f"- 企業: {job_info.get('company','')}")
+                    st.markdown(f"- 勤務地: {job_info.get('location','')}")
+                    st.markdown(f"- 年収: {job_info.get('salary','')}")
+                    url = job_info.get("url", "")
+                    if url and url.startswith("http"):
+                        st.link_button("求人ページを開く", url, key=f"pr_link_{p['id']}")
+
+                st.markdown("---")
+
+                # ステータス更新
+                st.markdown("**ステータス変更:**")
+                pu1, pu2 = st.columns(2)
+                current_idx = PROPOSAL_STATUSES.index(status) if status in PROPOSAL_STATUSES else 0
+                new_status = pu1.selectbox(
+                    "新しいステータス", PROPOSAL_STATUSES,
+                    index=current_idx, key=f"pr_ns_{p['id']}",
+                )
+                new_memo = pu2.text_input("メモ更新", value=p.get("memo", ""), key=f"pr_nm_{p['id']}")
+                new_next = st.text_input("次のアクション", value=p.get("next_action", ""),
+                                          placeholder="例: 一次面接の日程調整", key=f"pr_na_{p['id']}")
+
+                uc1, uc2 = st.columns(2)
+                if uc1.button("更新", type="primary", key=f"pr_upd_{p['id']}"):
+                    update_proposal_status(p["id"], new_status, new_memo, new_next)
+                    st.success("更新しました")
+                    st.rerun()
+
+                if uc2.button("この提案を削除", key=f"pr_del_{p['id']}"):
+                    delete_proposal(p["id"])
+                    st.success("削除しました")
+                    st.rerun()

@@ -87,6 +87,36 @@ def _init_db(conn: sqlite3.Connection):
             created_at TEXT DEFAULT ''
         );
 
+        -- 提案（候補者×求人の進捗管理）
+        CREATE TABLE IF NOT EXISTS proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id INTEGER NOT NULL,
+            job_url TEXT NOT NULL,
+            status TEXT DEFAULT '提案済み',
+            memo TEXT DEFAULT '',
+            next_action TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            UNIQUE(candidate_id, job_url)
+        );
+
+        -- 面談シート
+        CREATE TABLE IF NOT EXISTS interview_sheets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id INTEGER NOT NULL,
+            raw_input TEXT DEFAULT '',
+            sheet_content TEXT DEFAULT '',
+            tags_json TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT ''
+        );
+
+        -- 設定
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value_json TEXT DEFAULT '{}'
+        );
+
         -- 取得ログ
         CREATE TABLE IF NOT EXISTS collection_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -350,6 +380,123 @@ def delete_candidate(candidate_id: int):
     """候補者を削除"""
     conn = _get_conn()
     conn.execute("DELETE FROM saved_candidates WHERE id = ?", (candidate_id,))
+    conn.commit()
+
+
+# ============================================================
+# 提案（進捗管理）
+# ============================================================
+
+PROPOSAL_STATUSES = ["提案済み", "カジュアル面談", "一次面接", "二次面接", "三次面接", "内定", "内定承諾", "決定"]
+
+
+def save_proposal(candidate_id: int, job_url: str, status: str = "提案済み", memo: str = "") -> int:
+    conn = _get_conn()
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        """INSERT INTO proposals (candidate_id, job_url, status, memo, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(candidate_id, job_url) DO UPDATE SET status=excluded.status, memo=excluded.memo, updated_at=excluded.updated_at""",
+        (candidate_id, job_url, status, memo, now, now)
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_proposal_status(proposal_id: int, status: str, memo: str = None, next_action: str = None):
+    conn = _get_conn()
+    now = datetime.now().isoformat()
+    if memo is not None and next_action is not None:
+        conn.execute("UPDATE proposals SET status=?, memo=?, next_action=?, updated_at=? WHERE id=?",
+                     (status, memo, next_action, now, proposal_id))
+    elif memo is not None:
+        conn.execute("UPDATE proposals SET status=?, memo=?, updated_at=? WHERE id=?",
+                     (status, memo, now, proposal_id))
+    else:
+        conn.execute("UPDATE proposals SET status=?, updated_at=? WHERE id=?",
+                     (status, now, proposal_id))
+    conn.commit()
+
+
+def get_proposals() -> List[Dict]:
+    conn = _get_conn()
+    rows = conn.execute("SELECT * FROM proposals ORDER BY updated_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_proposal(proposal_id: int):
+    conn = _get_conn()
+    conn.execute("DELETE FROM proposals WHERE id=?", (proposal_id,))
+    conn.commit()
+
+
+# ============================================================
+# 面談シート
+# ============================================================
+
+def save_interview_sheet(candidate_id: int, raw_input: str, sheet_content: str, tags: list) -> int:
+    import json
+    conn = _get_conn()
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        "INSERT INTO interview_sheets (candidate_id, raw_input, sheet_content, tags_json, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+        (candidate_id, raw_input, sheet_content, json.dumps(tags, ensure_ascii=False), now, now)
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_interview_sheet(sheet_id: int, sheet_content: str, tags: list):
+    import json
+    conn = _get_conn()
+    now = datetime.now().isoformat()
+    conn.execute("UPDATE interview_sheets SET sheet_content=?, tags_json=?, updated_at=? WHERE id=?",
+                 (sheet_content, json.dumps(tags, ensure_ascii=False), now, sheet_id))
+    conn.commit()
+
+
+def get_interview_sheets(candidate_id: int = None) -> List[Dict]:
+    import json
+    conn = _get_conn()
+    if candidate_id:
+        rows = conn.execute("SELECT * FROM interview_sheets WHERE candidate_id=? ORDER BY updated_at DESC",
+                            (candidate_id,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM interview_sheets ORDER BY updated_at DESC").fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        d["tags"] = json.loads(d.pop("tags_json", "[]"))
+        results.append(d)
+    return results
+
+
+def delete_interview_sheet(sheet_id: int):
+    conn = _get_conn()
+    conn.execute("DELETE FROM interview_sheets WHERE id=?", (sheet_id,))
+    conn.commit()
+
+
+# ============================================================
+# アプリ設定
+# ============================================================
+
+def get_app_setting(key: str, default=None):
+    import json
+    conn = _get_conn()
+    row = conn.execute("SELECT value_json FROM app_settings WHERE key=?", (key,)).fetchone()
+    if row:
+        return json.loads(row[0])
+    return default
+
+
+def set_app_setting(key: str, value):
+    import json
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO app_settings (key, value_json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
+        (key, json.dumps(value, ensure_ascii=False))
+    )
     conn.commit()
 
 
