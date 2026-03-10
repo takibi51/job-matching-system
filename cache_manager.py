@@ -137,6 +137,14 @@ def _init_db(conn: sqlite3.Connection):
             context_json TEXT DEFAULT '{}',
             created_at TEXT DEFAULT ''
         );
+
+        -- アクセスログ（セキュリティ監査用）
+        CREATE TABLE IF NOT EXISTS access_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL DEFAULT '',
+            detail TEXT DEFAULT '',
+            created_at TEXT DEFAULT ''
+        );
     """)
 
     # --- マイグレーション: 既存テーブルへのカラム追加 ---
@@ -630,3 +638,60 @@ def get_job_type_stats() -> Dict:
         "SELECT COALESCE(job_type, 'web') as jt, COUNT(*) as cnt FROM jobs GROUP BY jt"
     ).fetchall()
     return {r["jt"]: r["cnt"] for r in rows}
+
+
+# ============================================================
+# アクセスログ（セキュリティ監査）
+# ============================================================
+
+def add_access_log(event_type: str, detail: str = ""):
+    """アクセスログを記録"""
+    conn = _get_conn()
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO access_log (event_type, detail, created_at) VALUES (?, ?, ?)",
+        (event_type, detail[:500], now)
+    )
+    conn.commit()
+
+
+def get_access_logs(limit: int = 50, event_type: str = None) -> List[Dict]:
+    """アクセスログを取得"""
+    conn = _get_conn()
+    if event_type:
+        rows = conn.execute(
+            "SELECT * FROM access_log WHERE event_type = ? ORDER BY created_at DESC LIMIT ?",
+            (event_type, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM access_log ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def clear_old_access_logs(days: int = 90):
+    """古いアクセスログを削除"""
+    conn = _get_conn()
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    conn.execute("DELETE FROM access_log WHERE created_at < ?", (cutoff,))
+    conn.commit()
+
+
+# ============================================================
+# DBファイルのパーミッション設定
+# ============================================================
+
+def _secure_db_permissions():
+    """DBファイルとディレクトリのパーミッションを制限（所有者のみ読み書き）"""
+    try:
+        if os.path.exists(CACHE_DIR):
+            os.chmod(CACHE_DIR, 0o700)
+        if os.path.exists(CACHE_DB):
+            os.chmod(CACHE_DB, 0o600)
+    except OSError:
+        pass
+
+
+# 起動時にパーミッション設定
+_secure_db_permissions()

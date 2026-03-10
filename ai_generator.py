@@ -741,16 +741,172 @@ def generate_chat_response(message, context=None):
     if job:
         ctx_info += f"\n選択中の求人: **{job.get('title', '')}**"
 
-    return f"""ご質問ありがとうございます。{ctx_info}
+    return f"""承知しました。{ctx_info}
 
-以下のサポートが可能です。具体的にお伝えいただければ詳しく回答します：
+以下のサポートが可能です：
 
-• 📝 **候補者サポート**: 「スカウト文を提案して」「懸念点を分析して」「決まりやすさを教えて」
-• 📋 **求人サポート**: 「求人票を改善して」
-• 📊 **分析**: 「この人の年収いくらで提示すべき？」「比較して」
-• 💡 **一般**: 採用戦略、面談の進め方など
+• 📝 **候補者**: 「スカウト文を提案して」「懸念点を分析して」「決まりやすさを教えて」
+• 📋 **求人**: 「求人票を改善して」「○○の求人を探して」
+• 🔍 **検索**: 「営業経験のある候補者を出して」「この候補者に合う求人を探して」
+• 📊 **分析**: 「年収いくらで提示すべき？」「比較して」
 
 お気軽にどうぞ！"""
+
+
+# ============================================================
+# 10. スマートチャット: インテント検出 + アクション生成
+# ============================================================
+
+def detect_chat_action(message, tab="", context=None):
+    """
+    ユーザーメッセージからインテント（意図）を検出し、アクション辞書を返す。
+
+    Returns:
+        {
+            "action": str,  # "search_jobs", "search_candidates", "generate_ai", "none"
+            "keywords": list[str],  # 検索キーワード
+            "response": str,  # AI応答テキスト
+            "sort": str | None,  # ソート指示
+            "filters": dict,  # フィルタ条件
+        }
+    """
+    context = context or {}
+    candidate = context.get("candidate")
+    job = context.get("job")
+    msg = message.strip()
+    msg_lower = msg.lower()
+
+    result = {"action": "none", "keywords": [], "response": "", "sort": None, "filters": {}}
+
+    # --- 候補者に合う求人を検索 ---
+    job_search_patterns = [
+        "求人を探して", "求人を出して", "求人を検索", "仕事を探して",
+        "合う求人", "マッチする求人", "おすすめの求人", "求人ある",
+        "この候補者に合う", "この人に合う",
+    ]
+    if any(p in msg_lower for p in job_search_patterns):
+        if candidate:
+            cond = candidate.get("conditions", {})
+            kws = cond.get("keywords", [])
+            f = _get_candidate_fields(candidate)
+            result["action"] = "search_jobs"
+            result["keywords"] = kws if kws else [f["job_type"]]
+            result["response"] = f"**{f['name']}様**に合う求人を検索しています... キーワード: {', '.join(result['keywords'])}"
+        else:
+            # メッセージからキーワード抽出
+            extracted = _extract_search_keywords(msg)
+            if extracted:
+                result["action"] = "search_jobs"
+                result["keywords"] = extracted
+                result["response"] = f"「{', '.join(extracted)}」の求人を検索しています..."
+            else:
+                result["response"] = "検索したい求人のキーワードを教えてください（例：「Webデザイナー 大阪」）"
+        return result
+
+    # --- 候補者を検索 ---
+    cand_search_patterns = [
+        "候補者を出して", "候補者を探して", "候補者を検索", "人材を探して",
+        "候補者はいる", "候補者ある", "合う候補者", "おすすめの候補者",
+        "できる人", "できる候補者", "強い候補者", "経験のある",
+    ]
+    if any(p in msg_lower for p in cand_search_patterns):
+        extracted = _extract_search_keywords(msg)
+        result["action"] = "search_candidates"
+        result["keywords"] = extracted if extracted else []
+        if extracted:
+            result["response"] = f"「{', '.join(extracted)}」に関連する候補者を検索しています..."
+        else:
+            result["response"] = "登録済み候補者を表示しています。"
+        return result
+
+    # --- ソート指示 ---
+    sort_patterns = {
+        "年収高い順": "salary_desc", "年収順": "salary_desc", "給与高い順": "salary_desc",
+        "スコア順": "score_desc", "マッチ度順": "score_desc",
+        "新着順": "date_desc", "最新順": "date_desc",
+    }
+    for pattern, sort_key in sort_patterns.items():
+        if pattern in msg_lower:
+            result["action"] = "sort_results"
+            result["sort"] = sort_key
+            result["response"] = f"{pattern}に並べ替えました。"
+            return result
+
+    # --- 特定キーワードの求人/候補者検索（自由文から） ---
+    if tab in ("candidateSearch", "candidate_search"):
+        # 候補者検索タブ → 求人検索がデフォルトアクション
+        extracted = _extract_search_keywords(msg)
+        if extracted and len(extracted) >= 1 and not any(
+            w in msg_lower for w in ["スカウト", "懸念", "推薦", "決まり", "面談", "ヘルプ", "使い方"]
+        ):
+            result["action"] = "search_jobs"
+            result["keywords"] = extracted
+            result["response"] = f"「{', '.join(extracted)}」の求人を検索しています..."
+            return result
+
+    if tab in ("jobSearch", "job_search"):
+        # 求人検索タブ → 候補者検索がデフォルトアクション
+        extracted = _extract_search_keywords(msg)
+        if extracted and len(extracted) >= 1 and not any(
+            w in msg_lower for w in ["改善", "求人票", "ヘルプ", "使い方"]
+        ):
+            result["action"] = "search_candidates"
+            result["keywords"] = extracted
+            result["response"] = f"「{', '.join(extracted)}」に関連する候補者を検索しています..."
+            return result
+
+    # --- AI生成（スカウト・懸念・推薦等）はgenerate_chat_responseに委譲 ---
+    ai_triggers = ["スカウト", "懸念", "リスク", "決まり", "推薦", "改善", "面談",
+                    "市場価値", "年収", "比較", "進捗", "ヘルプ", "使い方",
+                    "こんにちは", "おはよう", "はじめまして"]
+    if any(w in msg_lower for w in ai_triggers):
+        result["action"] = "generate_ai"
+        result["response"] = generate_chat_response(message, context)
+        return result
+
+    # --- デフォルト: 自然言語応答 ---
+    result["action"] = "generate_ai"
+    result["response"] = generate_chat_response(message, context)
+    return result
+
+
+def _extract_search_keywords(message):
+    """メッセージから検索用キーワードを抽出"""
+    stop_words = {
+        "を", "の", "に", "は", "が", "で", "と", "も", "から", "まで", "より",
+        "して", "ください", "出して", "探して", "検索", "教えて", "見せて",
+        "ある", "いる", "できる", "ない", "たい", "ほしい",
+        "求人", "候補者", "人材", "仕事", "この", "その", "あの",
+        "おすすめ", "合う", "マッチ", "強い", "高い", "良い",
+        "出してください", "探してください", "教えてください",
+    }
+
+    # 動詞接尾辞を除去するパターン
+    suffix_pattern = re.compile(r'(できて|できる|している|してる|がある|のある|はいる|な$|って$|けど$|する$|強い$)')
+
+    # 日本語トークン化（簡易：助詞・接続詞を区切りとして分割）
+    tokens = re.split(r'[\s、。,.\n\t]+|(?<=[\u3041-\u309F])(?=[\u4E00-\u9FFF\u30A0-\u30FF])', message)
+    keywords = []
+    for token in tokens:
+        token = token.strip()
+        if not token or len(token) < 2:
+            continue
+        if token.lower() in stop_words:
+            continue
+        # 名詞的なトークンを抽出（カタカナ、漢字混じり、英数字）
+        if re.search(r'[A-Za-z0-9\u30A0-\u30FF\u4E00-\u9FFF]', token):
+            # 疑問符・句読点を除去
+            cleaned = re.sub(r'[？?！!。、,.]+$', '', token)
+            # 動詞接尾辞を除去
+            cleaned = suffix_pattern.sub("", cleaned)
+            # 末尾の助詞を除去
+            for sw in ["を", "の", "に", "は", "が", "で", "と", "も"]:
+                if cleaned.endswith(sw):
+                    cleaned = cleaned[:-1]
+            if len(cleaned) >= 2 and cleaned.lower() not in stop_words:
+                keywords.append(cleaned)
+
+    return keywords[:5]
 
 
 # ============================================================

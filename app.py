@@ -44,7 +44,9 @@ from ai_generator import (
     generate_progress_analysis, generate_job_improvements,
     evaluate_market_fit, MARKET_FIT_AXES,
     generate_chat_response, generate_candidate_profile,
+    detect_chat_action,
 )
+from auth import check_password, check_session_timeout, render_logout_button, safe_url
 
 # ============================================================
 # ページ設定
@@ -55,6 +57,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ============================================================
+# 認証チェック（未認証時はログイン画面のみ表示）
+# ============================================================
+if not check_password():
+    st.stop()
+check_session_timeout()
 
 # ============================================================
 # バックグラウンド取得（スレッドセーフ・進捗%対応）
@@ -222,11 +231,28 @@ st.markdown("""
         border-radius: 12px; font-size: 0.75rem; background: #eef2ff; color: #3730a3;
     }
     .chat-msg {
-        padding: 0.7rem 1rem; border-radius: 12px; margin: 0.3rem 0;
-        font-size: 0.9rem; line-height: 1.5;
+        padding: 0.5rem 0.7rem; border-radius: 10px; margin: 0.2rem 0;
+        font-size: 0.82rem; line-height: 1.4; word-break: break-word;
     }
     .chat-user { background: #eef2ff; text-align: right; }
     .chat-ai { background: #f0fdf4; border: 1px solid #d1fae5; }
+    .ai-sidebar {
+        position: sticky; top: 2rem;
+        background: #fafbfc; border: 1px solid #e2e8f0; border-radius: 12px;
+        padding: 0.8rem; max-height: 85vh; overflow-y: auto;
+    }
+    .ai-sidebar h4 { margin: 0 0 0.5rem; font-size: 0.95rem; color: #1F4E79; }
+    .ai-quick-btn {
+        display: inline-block; padding: 0.25rem 0.6rem; margin: 0.15rem;
+        border-radius: 16px; font-size: 0.75rem; background: #eef2ff;
+        color: #3730a3; border: 1px solid #c7d2fe; cursor: pointer;
+        text-decoration: none;
+    }
+    .ai-quick-btn:hover { background: #c7d2fe; }
+    .ai-chat-history {
+        max-height: 40vh; overflow-y: auto; margin: 0.5rem 0;
+        padding: 0.3rem; border-radius: 8px; background: white;
+    }
     .empty-state {
         text-align: center; padding: 3rem; color: #a0aec0;
         border: 2px dashed #e2e8f0; border-radius: 16px; margin: 1rem 0;
@@ -247,6 +273,7 @@ st.markdown("""
 # ============================================================
 st.sidebar.markdown("## 🎯 Match")
 st.sidebar.caption("人材マッチングシステム")
+render_logout_button()
 st.sidebar.markdown("---")
 
 tabs_def = {
@@ -306,57 +333,197 @@ elif _bg["status"] == "error":
 
 
 # ============================================================
-# 共通: AIチャットパネル
+# 共通: AI右サイドパネル
 # ============================================================
-def render_chat_panel(tab_key, context=None):
-    """各タブの下部にAIチャットパネルを表示"""
-    st.markdown("---")
-    st.markdown("### 🤖 AIアシスタント")
+_TAB_QUICK_ACTIONS = {
+    "candidateSearch": [
+        ("🔍 求人を探して", "この候補者に合う求人を探してください"),
+        ("📝 スカウト文", "スカウト文を提案してください"),
+        ("⚠️ 懸念点", "懸念点を分析してください"),
+        ("📊 決まりやすさ", "決まりやすさを教えてください"),
+    ],
+    "jobSearch": [
+        ("👤 候補者を探して", "この求人に合う候補者を出してください"),
+        ("💡 求人改善", "求人票を改善してください"),
+    ],
+    "interviewSheet": [
+        ("📋 面談準備", "この候補者の面談準備をしてください"),
+        ("❓ 質問案", "面談での深掘り質問を提案してください"),
+    ],
+    "proposals": [
+        ("📊 進捗分析", "停滞している提案を分析してください"),
+    ],
+}
 
-    # プリセットボタン
-    presets = get_app_setting("ai_presets", {})
-    tab_presets = presets.get(tab_key, [])
-    if tab_presets:
-        preset_cols = st.columns(min(len(tab_presets), 3))
-        for pi, preset in enumerate(tab_presets[:3]):
-            if preset_cols[pi].button(preset, key=f"chat_preset_{tab_key}_{pi}"):
-                _handle_chat(tab_key, preset, context)
+
+def render_ai_sidebar(tab_key, context=None):
+    """右サイドパネルにAIアシスタントを表示"""
+    st.markdown('<div class="ai-sidebar">', unsafe_allow_html=True)
+    st.markdown("#### 🤖 AIアシスタント")
+
+    # クイックアクションボタン
+    quick_actions = _TAB_QUICK_ACTIONS.get(tab_key, [])
+    for label, prompt in quick_actions:
+        if st.button(label, key=f"ai_quick_{tab_key}_{label}", use_container_width=True):
+            _handle_smart_chat(tab_key, prompt, context)
+
+    st.markdown("---")
 
     # チャット履歴表示
-    history = get_chat_history(tab_key, limit=20)
+    history = get_chat_history(tab_key, limit=15)
     if history:
+        st.markdown('<div class="ai-chat-history">', unsafe_allow_html=True)
         for msg in history:
             role_cls = "chat-user" if msg["role"] == "user" else "chat-ai"
             avatar = "👤" if msg["role"] == "user" else "🤖"
-            content_escaped = esc(msg["content"]).replace("\n", "<br>")
-            st.markdown(f'<div class="chat-msg {role_cls}">{avatar} {content_escaped}</div>',
+            content_short = esc(msg["content"][:300]).replace("\n", "<br>")
+            if len(msg["content"]) > 300:
+                content_short += "..."
+            st.markdown(f'<div class="chat-msg {role_cls}">{avatar} {content_short}</div>',
                         unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # 入力
-    chat_col1, chat_col2 = st.columns([5, 1])
-    user_input = chat_col1.text_input(
-        "メッセージを入力",
-        placeholder="質問やリクエストを自由に入力...",
+    # チャット入力
+    user_input = st.text_input(
+        "メッセージ",
+        placeholder="質問やリクエストを入力...",
         key=f"chat_input_{tab_key}",
         label_visibility="collapsed",
     )
-    if chat_col2.button("送信", key=f"chat_send_{tab_key}", type="primary"):
+    if st.button("送信", key=f"chat_send_{tab_key}", type="primary", use_container_width=True):
         if user_input and user_input.strip():
-            _handle_chat(tab_key, user_input.strip(), context)
+            _handle_smart_chat(tab_key, user_input.strip(), context)
 
-    # クリアボタン
+    # クリア
     if history:
-        if st.button("🗑️ チャット履歴をクリア", key=f"chat_clear_{tab_key}"):
+        if st.button("🗑️ 履歴クリア", key=f"chat_clear_{tab_key}", use_container_width=True):
             clear_chat_history(tab_key)
             st.rerun()
 
+    st.markdown('</div>', unsafe_allow_html=True)
 
-def _handle_chat(tab_key, message, context):
-    """チャットメッセージを処理"""
+
+def _handle_smart_chat(tab_key, message, context):
+    """スマートチャット: インテント検出 → アクション実行 → 応答生成"""
+    action = detect_chat_action(message, tab=tab_key, context=context)
+
+    if action["action"] == "search_jobs":
+        # 求人検索をトリガー
+        kws = action["keywords"]
+        if kws:
+            search_query = " ".join(kws)
+            results = search_jobs(search_query)
+            if results:
+                st.session_state[f"ai_search_results_{tab_key}"] = {
+                    "type": "jobs",
+                    "query": search_query,
+                    "results": results,
+                    "message": f"「{search_query}」で {len(results)}件 の求人が見つかりました。",
+                }
+                action["response"] = f"「{search_query}」で **{len(results)}件** の求人が見つかりました。メインエリアに表示しています。"
+            else:
+                action["response"] = f"「{search_query}」に一致する求人が見つかりませんでした。別のキーワードをお試しください。"
+
+    elif action["action"] == "search_candidates":
+        # 候補者検索をトリガー
+        kws = action["keywords"]
+        all_cands = get_saved_candidates()
+        if kws and all_cands:
+            matched = _filter_candidates_by_keywords(all_cands, kws)
+            st.session_state[f"ai_search_results_{tab_key}"] = {
+                "type": "candidates",
+                "query": " ".join(kws),
+                "results": matched,
+                "message": f"「{', '.join(kws)}」に関連する候補者を {len(matched)}名 見つけました。",
+            }
+            action["response"] = f"「{', '.join(kws)}」に関連する候補者を **{len(matched)}名** 見つけました。メインエリアに表示しています。"
+        elif all_cands:
+            st.session_state[f"ai_search_results_{tab_key}"] = {
+                "type": "candidates",
+                "query": "",
+                "results": all_cands,
+                "message": f"登録済み候補者 {len(all_cands)}名 を表示しています。",
+            }
+            action["response"] = f"登録済みの候補者 **{len(all_cands)}名** をメインエリアに表示しています。"
+        else:
+            action["response"] = "候補者が登録されていません。「データ取込」から追加してください。"
+
+    elif action["action"] == "sort_results":
+        st.session_state[f"ai_sort_{tab_key}"] = action["sort"]
+
+    # チャット履歴に保存
     add_chat_message(tab_key, "user", message)
-    response = generate_chat_response(message, context)
-    add_chat_message(tab_key, "ai", response)
+    add_chat_message(tab_key, "ai", action["response"])
     st.rerun()
+
+
+def _filter_candidates_by_keywords(candidates, keywords):
+    """キーワードで候補者をフィルタリング"""
+    if not keywords:
+        return candidates
+    matched = []
+    for cand in candidates:
+        text = " ".join([
+            cand.get("name", ""),
+            " ".join(str(v) for v in cand.get("info", {}).values()),
+            " ".join(str(s) for s in cand.get("strengths", [])),
+            " ".join(cand.get("conditions", {}).get("keywords", [])),
+        ]).lower()
+        score = sum(1 for kw in keywords if kw.lower() in text)
+        if score > 0:
+            matched.append((cand, score))
+    matched.sort(key=lambda x: x[1], reverse=True)
+    return [c for c, _ in matched]
+
+
+def _render_ai_search_results(tab_key):
+    """AIチャットからトリガーされた検索結果をメインカラムに表示"""
+    key = f"ai_search_results_{tab_key}"
+    if key not in st.session_state:
+        return False
+
+    data = st.session_state[key]
+    st.markdown(f"### 🤖 AIアシスタントの検索結果")
+    st.info(data["message"])
+
+    if st.button("✕ 検索結果を閉じる", key=f"ai_close_{tab_key}"):
+        del st.session_state[key]
+        st.rerun()
+        return False
+
+    if data["type"] == "jobs":
+        for i, job in enumerate(data["results"][:20]):
+            jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
+            st.markdown(f"""
+            <div class="job-card">
+                <div style="font-size:1.05rem;font-weight:700;color:#1a202c;">
+                    {jt_icon} {esc(job.get('title',''))}
+                </div>
+                🏢 {esc(job.get('company',''))} &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
+                &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
+            </div>""", unsafe_allow_html=True)
+            bc1, bc2 = st.columns(2)
+            if bc1.button("📄 詳細", key=f"ai_job_{tab_key}_{i}"):
+                show_job_popup(job, get_saved_candidates())
+            url = job.get("url", "")
+            if safe_url(url):
+                bc2.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
+
+    elif data["type"] == "candidates":
+        for i, cand in enumerate(data["results"][:20]):
+            mf = evaluate_market_fit(cand)
+            star = "⭐ " if mf["has_star"] else ""
+            kw_tags = " ".join(f'`{k}`' for k in cand.get("conditions", {}).get("keywords", [])[:5])
+            st.markdown(f"""
+            <div class="cand-card">
+                {star}<strong>{esc(cand.get('name','候補者'))}</strong>
+                <div style="margin-top:0.2rem;font-size:0.85rem;">{kw_tags}</div>
+            </div>""", unsafe_allow_html=True)
+            if st.button("👤 詳細", key=f"ai_cand_{tab_key}_{i}"):
+                show_candidate_popup(cand)
+
+    st.markdown("---")
+    return True
 
 
 # ============================================================
@@ -574,7 +741,7 @@ def show_job_popup(job, candidates=None):
         st.markdown(f"💰 {job.get('salary', '情報なし')}")
     with j2:
         url = job.get("url", "")
-        if url and url.startswith("http"):
+        if safe_url(url):
             st.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページを開く</a>', unsafe_allow_html=True)
         st.caption(f"ソース: {job.get('source', '')} / 更新: {job.get('updated_at', '')[:16]}")
 
@@ -681,103 +848,117 @@ if page == "candidate_search":
 
         st.markdown("---")
 
-        # 求人種別フィルタ
-        jt_filter = st.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key="cs_jt")
-        jt_val = None
-        if "契約中" in jt_filter:
-            jt_val = "contracted"
-        elif "Web" in jt_filter:
-            jt_val = "web"
+        # 2カラムレイアウト: メイン結果 + AIサイドパネル
+        _cs_main, _cs_ai = st.columns([3, 1])
 
-        if stats["total_jobs"] == 0:
-            st.markdown('<div class="empty-state"><h3>求人データがまだありません</h3>'
-                        '<p>「📦 データ取込」からデータを追加してください</p></div>',
-                        unsafe_allow_html=True)
-        else:
-            search_query = " ".join(conditions.get("keywords", []) + conditions.get("extra_keywords", [])[:3])
-            matched_jobs = search_jobs(search_query) if search_query.strip() else get_all_jobs(limit=300, job_type=jt_val)
-            if jt_val and matched_jobs:
-                matched_jobs = [j for j in matched_jobs if j.get("job_type", "web") == jt_val]
+        with _cs_main:
+            # AIトリガーの検索結果
+            _render_ai_search_results("candidateSearch")
 
-            if matched_jobs:
-                ranked = rank_jobs(matched_jobs, conditions)
-                fc1, fc2, fc3 = st.columns(3)
-                min_score = fc1.slider("最低スコア", 0, 100, 0, key="cs_fscore")
-                sort_opt = fc2.selectbox("並べ替え", ["マッチ度順", "年収順（高→低）", "新着順"], key="cs_sort")
-                require_salary = fc3.checkbox("年収あり", value=False, key="cs_fsal")
+            # 求人種別フィルタ
+            jt_filter = st.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key="cs_jt")
+            jt_val = None
+            if "契約中" in jt_filter:
+                jt_val = "contracted"
+            elif "Web" in jt_filter:
+                jt_val = "web"
 
-                filtered = [j for j in ranked if j.get("score", 0) >= min_score
-                            and (not require_salary or j.get("salary", "").strip())]
-                if sort_opt == "年収順（高→低）":
-                    def _sk(j):
-                        nums = re.findall(r'(\d+)', j.get("salary", "").replace(",", ""))
-                        return max([int(n) for n in nums]) if nums else 0
-                    filtered.sort(key=_sk, reverse=True)
-                elif sort_opt == "新着順":
-                    filtered.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
-
-                st.markdown(f"**{len(filtered)}件**マッチ（全{stats['total_jobs']:,}件中）")
-
-                for i, job in enumerate(filtered[:50]):
-                    score = job.get("score", 0)
-                    jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
-                    st.markdown(f"""
-                    <div class="job-card">
-                        {_score_badge(score)} <span style="color:#a0aec0;font-size:0.8rem;">{jt_icon} #{i+1}</span>
-                        {_match_bar(score)}
-                        <div style="font-size:1.05rem;font-weight:700;color:#1a202c;margin:0.3rem 0;">
-                            {esc(job.get('title','不明'))}
-                        </div>
-                        🏢 <strong>{esc(job.get('company',''))}</strong>
-                        &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
-                        &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
-                        <div style="margin-top:0.3rem;">{_fit_tags(job.get('match_reasons',''))}</div>
-                    </div>""", unsafe_allow_html=True)
-
-                    qa1, qa2, qa3 = st.columns([1, 1, 1])
-                    if qa1.button("📄 求人詳細", key=f"cs_jpop_{i}"):
-                        show_job_popup(job, saved_cands)
-                    if active_cand and active_cand.get("id"):
-                        if qa2.button("📊 提案登録", key=f"cs_prop_{i}"):
-                            save_proposal(active_cand["id"], job.get("url", ""), "提案済み", "")
-                            st.success("提案を登録しました")
-                            st.rerun()
-                    url = job.get("url", "")
-                    if url and isinstance(url, str) and url.startswith("http"):
-                        qa3.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
-
-                with st.expander(f"📊 テーブル表示（{len(filtered)}件）"):
-                    df = pd.DataFrame([{
-                        "順位": i, "スコア": j.get("score", 0),
-                        "種別": "契約中" if j.get("job_type") == "contracted" else "Web",
-                        "求人タイトル": j.get("title", ""), "企業名": j.get("company", ""),
-                        "勤務地": j.get("location", ""), "年収": j.get("salary", ""),
-                        "ソース": j.get("source", ""), "URL": j.get("url", ""),
-                    } for i, j in enumerate(filtered, 1)])
-                    st.dataframe(df, hide_index=True, use_container_width=True)
-                    csv_buf = io.StringIO()
-                    df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
-                    st.download_button("CSV DL", csv_buf.getvalue(), "マッチング結果.csv", "text/csv")
+            if stats["total_jobs"] == 0:
+                st.markdown('<div class="empty-state"><h3>求人データがまだありません</h3>'
+                            '<p>「📦 データ取込」からデータを追加してください</p></div>',
+                            unsafe_allow_html=True)
             else:
-                st.info("条件に一致する求人がありません。")
-    else:
-        st.markdown("---")
-        st.markdown("#### 手動検索")
-        manual_kw = st.text_input("検索キーワード", placeholder="例: Webデザイナー 大阪", key="cs_manual_kw")
-        if manual_kw.strip() and stats["total_jobs"] > 0:
-            results = search_jobs(manual_kw)
-            if results:
-                st.markdown(f"**{len(results)}件** ヒット")
-                for i, job in enumerate(results[:20]):
-                    jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
-                    st.markdown(f"""
-                    <div class="job-card">
-                        {jt_icon} <strong>{esc(job.get('title',''))}</strong> - {esc(job.get('company',''))}
-                        &nbsp;|&nbsp; 📍 {esc(job.get('location',''))} &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
-                    </div>""", unsafe_allow_html=True)
+                search_query = " ".join(conditions.get("keywords", []) + conditions.get("extra_keywords", [])[:3])
+                matched_jobs = search_jobs(search_query) if search_query.strip() else get_all_jobs(limit=300, job_type=jt_val)
+                if jt_val and matched_jobs:
+                    matched_jobs = [j for j in matched_jobs if j.get("job_type", "web") == jt_val]
 
-    chat_ctx = {"candidate": active_cand if active_cand else None, "tab": "candidateSearch"}
-    render_chat_panel("candidateSearch", chat_ctx)
+                if matched_jobs:
+                    ranked = rank_jobs(matched_jobs, conditions)
+                    fc1, fc2, fc3 = st.columns(3)
+                    min_score = fc1.slider("最低スコア", 0, 100, 0, key="cs_fscore")
+                    sort_opt = fc2.selectbox("並べ替え", ["マッチ度順", "年収順（高→低）", "新着順"], key="cs_sort")
+                    require_salary = fc3.checkbox("年収あり", value=False, key="cs_fsal")
+
+                    filtered = [j for j in ranked if j.get("score", 0) >= min_score
+                                and (not require_salary or j.get("salary", "").strip())]
+                    if sort_opt == "年収順（高→低）":
+                        def _sk(j):
+                            nums = re.findall(r'(\d+)', j.get("salary", "").replace(",", ""))
+                            return max([int(n) for n in nums]) if nums else 0
+                        filtered.sort(key=_sk, reverse=True)
+                    elif sort_opt == "新着順":
+                        filtered.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+
+                    st.markdown(f"**{len(filtered)}件**マッチ（全{stats['total_jobs']:,}件中）")
+
+                    for i, job in enumerate(filtered[:50]):
+                        score = job.get("score", 0)
+                        jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
+                        st.markdown(f"""
+                        <div class="job-card">
+                            {_score_badge(score)} <span style="color:#a0aec0;font-size:0.8rem;">{jt_icon} #{i+1}</span>
+                            {_match_bar(score)}
+                            <div style="font-size:1.05rem;font-weight:700;color:#1a202c;margin:0.3rem 0;">
+                                {esc(job.get('title','不明'))}
+                            </div>
+                            🏢 <strong>{esc(job.get('company',''))}</strong>
+                            &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
+                            &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
+                            <div style="margin-top:0.3rem;">{_fit_tags(job.get('match_reasons',''))}</div>
+                        </div>""", unsafe_allow_html=True)
+
+                        qa1, qa2, qa3 = st.columns([1, 1, 1])
+                        if qa1.button("📄 求人詳細", key=f"cs_jpop_{i}"):
+                            show_job_popup(job, saved_cands)
+                        if active_cand and active_cand.get("id"):
+                            if qa2.button("📊 提案登録", key=f"cs_prop_{i}"):
+                                save_proposal(active_cand["id"], job.get("url", ""), "提案済み", "")
+                                st.success("提案を登録しました")
+                                st.rerun()
+                        url = job.get("url", "")
+                        if safe_url(url):
+                            qa3.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
+
+                    with st.expander(f"📊 テーブル表示（{len(filtered)}件）"):
+                        df = pd.DataFrame([{
+                            "順位": i, "スコア": j.get("score", 0),
+                            "種別": "契約中" if j.get("job_type") == "contracted" else "Web",
+                            "求人タイトル": j.get("title", ""), "企業名": j.get("company", ""),
+                            "勤務地": j.get("location", ""), "年収": j.get("salary", ""),
+                            "ソース": j.get("source", ""), "URL": j.get("url", ""),
+                        } for i, j in enumerate(filtered, 1)])
+                        st.dataframe(df, hide_index=True, use_container_width=True)
+                        csv_buf = io.StringIO()
+                        df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
+                        st.download_button("CSV DL", csv_buf.getvalue(), "マッチング結果.csv", "text/csv")
+                else:
+                    st.info("条件に一致する求人がありません。")
+
+        with _cs_ai:
+            _cs_chat_ctx = {"candidate": active_cand if active_cand else None, "tab": "candidateSearch"}
+            render_ai_sidebar("candidateSearch", _cs_chat_ctx)
+
+    else:
+        _cs_main2, _cs_ai2 = st.columns([3, 1])
+        with _cs_main2:
+            st.markdown("#### 手動検索")
+            manual_kw = st.text_input("検索キーワード", placeholder="例: Webデザイナー 大阪", key="cs_manual_kw")
+            if manual_kw.strip() and stats["total_jobs"] > 0:
+                results = search_jobs(manual_kw)
+                if results:
+                    st.markdown(f"**{len(results)}件** ヒット")
+                    for i, job in enumerate(results[:20]):
+                        jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
+                        st.markdown(f"""
+                        <div class="job-card">
+                            {jt_icon} <strong>{esc(job.get('title',''))}</strong> - {esc(job.get('company',''))}
+                            &nbsp;|&nbsp; 📍 {esc(job.get('location',''))} &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
+                        </div>""", unsafe_allow_html=True)
+            # AIトリガーの検索結果
+            _render_ai_search_results("candidateSearch")
+        with _cs_ai2:
+            render_ai_sidebar("candidateSearch", {"tab": "candidateSearch"})
 
 
 # ############################################################
@@ -804,53 +985,61 @@ elif page == "job_search":
 
     selected_job_for_chat = None
 
-    if not job_results:
-        st.markdown('<div class="empty-state"><h3>求人がありません</h3></div>', unsafe_allow_html=True)
-    elif not saved_cands:
-        st.markdown('<div class="empty-state"><h3>候補者が登録されていません</h3></div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f"**{len(job_results)}件**の求人")
-        for i, job in enumerate(job_results[:30]):
-            jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
-            st.markdown(f"""
-            <div class="job-card">
-                <div style="font-size:1.05rem;font-weight:700;color:#1a202c;">
-                    {jt_icon} {esc(job.get('title',''))}
-                </div>
-                🏢 {esc(job.get('company',''))} &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
-                &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
-            </div>""", unsafe_allow_html=True)
+    # 2カラムレイアウト: メイン結果 + AIサイドパネル
+    _js_main, _js_ai = st.columns([3, 1])
 
-            jqa1, jqa2 = st.columns(2)
-            if jqa1.button("📄 詳細 & マッチ候補者", key=f"js_jpop_{i}"):
-                show_job_popup(job, saved_cands)
-            url = job.get("url", "")
-            if url and url.startswith("http"):
-                jqa2.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
+    with _js_main:
+        # AIトリガーの検索結果
+        _render_ai_search_results("jobSearch")
 
-            cand_scores = []
-            for cand in saved_cands:
-                cond = _cand_to_conditions(cand)
-                sc, reasons = score_job(job, cond)
-                if sc >= 10:
-                    cand_scores.append((cand, sc, reasons))
-            cand_scores.sort(key=lambda x: x[1], reverse=True)
-            if cand_scores:
-                top3 = cand_scores[:3]
-                tcols = st.columns(len(top3))
-                for ti, (cand, sc, reasons) in enumerate(top3):
-                    with tcols[ti]:
-                        mf_c = evaluate_market_fit(cand)
-                        star = "⭐" if mf_c["has_star"] else ""
-                        st.markdown(f"{_score_badge(sc)} {star} **{esc(cand.get('name',''))}**",
-                                    unsafe_allow_html=True)
-                        if st.button("👤 詳細", key=f"js_cpop_{i}_{cand.get('id',ti)}"):
-                            show_candidate_popup(cand)
-            if i == 0:
-                selected_job_for_chat = job
+        if not job_results:
+            st.markdown('<div class="empty-state"><h3>求人がありません</h3></div>', unsafe_allow_html=True)
+        elif not saved_cands:
+            st.markdown('<div class="empty-state"><h3>候補者が登録されていません</h3></div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f"**{len(job_results)}件**の求人")
+            for i, job in enumerate(job_results[:30]):
+                jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
+                st.markdown(f"""
+                <div class="job-card">
+                    <div style="font-size:1.05rem;font-weight:700;color:#1a202c;">
+                        {jt_icon} {esc(job.get('title',''))}
+                    </div>
+                    🏢 {esc(job.get('company',''))} &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
+                    &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
+                </div>""", unsafe_allow_html=True)
 
-    chat_ctx = {"job": selected_job_for_chat if job_results else None, "tab": "jobSearch"}
-    render_chat_panel("jobSearch", chat_ctx)
+                jqa1, jqa2 = st.columns(2)
+                if jqa1.button("📄 詳細 & マッチ候補者", key=f"js_jpop_{i}"):
+                    show_job_popup(job, saved_cands)
+                url = job.get("url", "")
+                if safe_url(url):
+                    jqa2.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
+
+                cand_scores = []
+                for cand in saved_cands:
+                    cond = _cand_to_conditions(cand)
+                    sc, reasons = score_job(job, cond)
+                    if sc >= 10:
+                        cand_scores.append((cand, sc, reasons))
+                cand_scores.sort(key=lambda x: x[1], reverse=True)
+                if cand_scores:
+                    top3 = cand_scores[:3]
+                    tcols = st.columns(len(top3))
+                    for ti, (cand, sc, reasons) in enumerate(top3):
+                        with tcols[ti]:
+                            mf_c = evaluate_market_fit(cand)
+                            star = "⭐" if mf_c["has_star"] else ""
+                            st.markdown(f"{_score_badge(sc)} {star} **{esc(cand.get('name',''))}**",
+                                        unsafe_allow_html=True)
+                            if st.button("👤 詳細", key=f"js_cpop_{i}_{cand.get('id',ti)}"):
+                                show_candidate_popup(cand)
+                if i == 0:
+                    selected_job_for_chat = job
+
+    with _js_ai:
+        _js_chat_ctx = {"job": selected_job_for_chat if job_results else None, "tab": "jobSearch"}
+        render_ai_sidebar("jobSearch", _js_chat_ctx)
 
 
 # ############################################################
@@ -860,7 +1049,14 @@ elif page == "interview":
     st.markdown("## 📝 面談分析")
     st.caption("面談内容をAIが構造化し、候補者特性を抽出します")
 
-    iv_tabs = st.tabs(["✏️ 新規作成", "📋 シート一覧"])
+    _iv_main, _iv_ai = st.columns([3, 1])
+
+    # 右サイドパネル: AIアシスタント
+    with _iv_ai:
+        render_ai_sidebar("interviewSheet", {"tab": "interviewSheet"})
+
+    with _iv_main:
+        iv_tabs = st.tabs(["✏️ 新規作成", "📋 シート一覧"])
 
     with iv_tabs[0]:
         if not saved_cands:
@@ -996,7 +1192,6 @@ elif page == "interview":
                         delete_interview_sheet(sheet["id"])
                         st.rerun()
 
-    render_chat_panel("interviewSheet", {"tab": "interviewSheet"})
 
 
 # ############################################################
@@ -1006,120 +1201,124 @@ elif page == "progress":
     st.markdown("## 📊 提案管理")
     st.caption("候補者×求人の提案状況を管理します")
 
-    proposals = get_proposals()
-    cand_map = {c["id"]: c for c in saved_cands}
+    _pr_main, _pr_ai = st.columns([3, 1])
+    with _pr_ai:
+        render_ai_sidebar("proposals", {"tab": "proposals"})
 
-    status_counts = {s: 0 for s in PROPOSAL_STATUSES}
-    for p in proposals:
-        s = p.get("status", "提案済み")
-        if s in status_counts:
-            status_counts[s] += 1
+    with _pr_main:
+        proposals = get_proposals()
+        cand_map = {c["id"]: c for c in saved_cands}
 
-    if proposals:
-        colors = ["#667eea", "#4facfe", "#43e97b", "#38f9d7", "#f9d423", "#ff6b6b", "#ee5a24", "#6c5ce7"]
-        pipeline_html = '<div style="display:flex;gap:4px;margin-bottom:1rem;">'
-        for i, (status, count) in enumerate(status_counts.items()):
-            color = colors[i % len(colors)]
-            pipeline_html += f'<div style="flex:1;text-align:center;padding:0.5rem;border-radius:8px;background:{color}20;border:2px solid {color};"><div style="font-size:1.5rem;font-weight:800;color:{color};">{count}</div><div style="font-size:0.7rem;color:#4a5568;">{esc(status)}</div></div>'
-        pipeline_html += '</div>'
-        st.markdown(pipeline_html, unsafe_allow_html=True)
-
-    with st.expander("➕ 新しい提案を登録"):
-        if saved_cands and stats["total_jobs"] > 0:
-            pr_cand_opts = [f"{c['name']}（ID:{c['id']}）" for c in saved_cands]
-            pr_cand_sel = st.selectbox("候補者", pr_cand_opts, key="pr_cand")
-            pr_cand_idx = pr_cand_opts.index(pr_cand_sel)
-            pr_cand_id = saved_cands[pr_cand_idx]["id"]
-            pr_job_kw = st.text_input("求人を検索", key="pr_job_kw")
-            pr_jobs = search_jobs(pr_job_kw) if pr_job_kw.strip() else get_all_jobs(limit=50)
-            if pr_jobs:
-                pr_job_opts = [f"{j.get('title','不明')} - {j.get('company','')}" for j in pr_jobs[:30]]
-                pr_job_sel = st.selectbox("求人", pr_job_opts, key="pr_job")
-                pr_job = pr_jobs[pr_job_opts.index(pr_job_sel)]
-                pr_memo = st.text_input("メモ", key="pr_memo")
-                if st.button("提案を登録", type="primary", key="pr_save"):
-                    save_proposal(pr_cand_id, pr_job.get("url", ""), "提案済み", pr_memo)
-                    st.success("登録しました")
-                    st.rerun()
-        else:
-            st.info("候補者と求人の両方が必要です")
-
-    st.markdown("---")
-
-    if not proposals:
-        st.markdown('<div class="empty-state"><h3>提案がまだありません</h3></div>', unsafe_allow_html=True)
-    else:
-        pf1, pf2 = st.columns(2)
-        pr_filter_status = pf1.multiselect("ステータス", PROPOSAL_STATUSES, default=PROPOSAL_STATUSES, key="pr_fstatus")
-        if saved_cands:
-            pr_filter_cand = pf2.selectbox("候補者", ["全員"] + [c["name"] for c in saved_cands], key="pr_fcand")
-        else:
-            pr_filter_cand = "全員"
-
-        filtered_proposals = []
+        status_counts = {s: 0 for s in PROPOSAL_STATUSES}
         for p in proposals:
-            if p.get("status", "") not in pr_filter_status:
-                continue
-            cn = cand_map.get(p["candidate_id"], {}).get("name", f"#{p['candidate_id']}")
-            if pr_filter_cand != "全員" and cn != pr_filter_cand:
-                continue
-            filtered_proposals.append(p)
+            s = p.get("status", "提案済み")
+            if s in status_counts:
+                status_counts[s] += 1
 
-        st.markdown(f"**{len(filtered_proposals)}件**")
+        if proposals:
+            colors = ["#667eea", "#4facfe", "#43e97b", "#38f9d7", "#f9d423", "#ff6b6b", "#ee5a24", "#6c5ce7"]
+            pipeline_html = '<div style="display:flex;gap:4px;margin-bottom:1rem;">'
+            for i, (status, count) in enumerate(status_counts.items()):
+                color = colors[i % len(colors)]
+                pipeline_html += f'<div style="flex:1;text-align:center;padding:0.5rem;border-radius:8px;background:{color}20;border:2px solid {color};"><div style="font-size:1.5rem;font-weight:800;color:{color};">{count}</div><div style="font-size:0.7rem;color:#4a5568;">{esc(status)}</div></div>'
+            pipeline_html += '</div>'
+            st.markdown(pipeline_html, unsafe_allow_html=True)
 
-        for p in filtered_proposals:
-            cand_info = cand_map.get(p["candidate_id"], {})
-            cand_name = cand_info.get("name", f"#{p['candidate_id']}")
-            status = p.get("status", "提案済み")
-            updated = p.get("updated_at", "")[:16].replace("T", " ")
+        with st.expander("➕ 新しい提案を登録"):
+            if saved_cands and stats["total_jobs"] > 0:
+                pr_cand_opts = [f"{c['name']}（ID:{c['id']}）" for c in saved_cands]
+                pr_cand_sel = st.selectbox("候補者", pr_cand_opts, key="pr_cand")
+                pr_cand_idx = pr_cand_opts.index(pr_cand_sel)
+                pr_cand_id = saved_cands[pr_cand_idx]["id"]
+                pr_job_kw = st.text_input("求人を検索", key="pr_job_kw")
+                pr_jobs = search_jobs(pr_job_kw) if pr_job_kw.strip() else get_all_jobs(limit=50)
+                if pr_jobs:
+                    pr_job_opts = [f"{j.get('title','不明')} - {j.get('company','')}" for j in pr_jobs[:30]]
+                    pr_job_sel = st.selectbox("求人", pr_job_opts, key="pr_job")
+                    pr_job = pr_jobs[pr_job_opts.index(pr_job_sel)]
+                    pr_memo = st.text_input("メモ", key="pr_memo")
+                    if st.button("提案を登録", type="primary", key="pr_save"):
+                        save_proposal(pr_cand_id, pr_job.get("url", ""), "提案済み", pr_memo)
+                        st.success("登録しました")
+                        st.rerun()
+            else:
+                st.info("候補者と求人の両方が必要です")
 
-            from cache_manager import _get_conn
-            job_info = None
-            job_url = p.get("job_url", "")
-            if job_url:
-                conn = _get_conn()
-                row = conn.execute("SELECT * FROM jobs WHERE url = ?", (job_url,)).fetchone()
-                if row:
-                    job_info = dict(row)
-            job_title = job_info.get("title", "不明") if job_info else "不明"
+        st.markdown("---")
 
-            s_colors = {"提案済み": "#667eea", "カジュアル面談": "#4facfe", "一次面接": "#43e97b",
-                        "二次面接": "#38f9d7", "三次面接": "#f9d423", "内定": "#ff6b6b",
-                        "内定承諾": "#ee5a24", "決定": "#6c5ce7"}
-            s_color = s_colors.get(status, "#667eea")
+        if not proposals:
+            st.markdown('<div class="empty-state"><h3>提案がまだありません</h3></div>', unsafe_allow_html=True)
+        else:
+            pf1, pf2 = st.columns(2)
+            pr_filter_status = pf1.multiselect("ステータス", PROPOSAL_STATUSES, default=PROPOSAL_STATUSES, key="pr_fstatus")
+            if saved_cands:
+                pr_filter_cand = pf2.selectbox("候補者", ["全員"] + [c["name"] for c in saved_cands], key="pr_fcand")
+            else:
+                pr_filter_cand = "全員"
 
-            st.markdown(f"""
-            <div class="job-card">
-                <span style="display:inline-block;padding:0.2rem 0.7rem;border-radius:12px;background:{s_color}20;color:{s_color};font-weight:700;font-size:0.85rem;">{esc(status)}</span>
-                <span style="color:#a0aec0;font-size:0.8rem;margin-left:0.5rem;">{updated}</span>
-                <div style="margin-top:0.4rem;">
-                    <strong>👤 {esc(cand_name)}</strong> → <strong>📋 {esc(job_title)}</strong>
-                </div>
-                {f'<div style="color:#718096;font-size:0.85rem;">📝 {esc(p.get("memo",""))}</div>' if p.get("memo") else ''}
-            </div>""", unsafe_allow_html=True)
+            filtered_proposals = []
+            for p in proposals:
+                if p.get("status", "") not in pr_filter_status:
+                    continue
+                cn = cand_map.get(p["candidate_id"], {}).get("name", f"#{p['candidate_id']}")
+                if pr_filter_cand != "全員" and cn != pr_filter_cand:
+                    continue
+                filtered_proposals.append(p)
 
-            with st.expander(f"⚙️ 操作 - {cand_name}"):
-                pu1, pu2 = st.columns(2)
-                current_idx = PROPOSAL_STATUSES.index(status) if status in PROPOSAL_STATUSES else 0
-                new_status = pu1.selectbox("ステータス", PROPOSAL_STATUSES, index=current_idx, key=f"pr_ns_{p['id']}")
-                new_memo = pu2.text_input("メモ", value=p.get("memo", ""), key=f"pr_nm_{p['id']}")
-                new_next = st.text_input("次のアクション", value=p.get("next_action", ""), key=f"pr_na_{p['id']}")
+            st.markdown(f"**{len(filtered_proposals)}件**")
 
-                uc1, uc2, uc3 = st.columns(3)
-                if uc1.button("更新", type="primary", key=f"pr_upd_{p['id']}"):
-                    update_proposal_status(p["id"], new_status, new_memo, new_next)
-                    st.success("更新しました")
-                    st.rerun()
-                if uc2.button("🗑️ 削除", key=f"pr_del_{p['id']}"):
-                    delete_proposal(p["id"])
-                    st.rerun()
-                if uc3.button("🤖 進捗分析", key=f"pr_ai_{p['id']}"):
-                    analysis = generate_progress_analysis({**p, "job_title": job_title}, cand_info or None)
-                    st.session_state[f"pr_analysis_{p['id']}"] = analysis
-                if st.session_state.get(f"pr_analysis_{p['id']}"):
-                    st.markdown(st.session_state[f"pr_analysis_{p['id']}"])
+            for p in filtered_proposals:
+                cand_info = cand_map.get(p["candidate_id"], {})
+                cand_name = cand_info.get("name", f"#{p['candidate_id']}")
+                status = p.get("status", "提案済み")
+                updated = p.get("updated_at", "")[:16].replace("T", " ")
 
-    render_chat_panel("proposals", {"tab": "proposals"})
+                from cache_manager import _get_conn
+                job_info = None
+                job_url = p.get("job_url", "")
+                if job_url:
+                    conn = _get_conn()
+                    row = conn.execute("SELECT * FROM jobs WHERE url = ?", (job_url,)).fetchone()
+                    if row:
+                        job_info = dict(row)
+                job_title = job_info.get("title", "不明") if job_info else "不明"
+
+                s_colors = {"提案済み": "#667eea", "カジュアル面談": "#4facfe", "一次面接": "#43e97b",
+                            "二次面接": "#38f9d7", "三次面接": "#f9d423", "内定": "#ff6b6b",
+                            "内定承諾": "#ee5a24", "決定": "#6c5ce7"}
+                s_color = s_colors.get(status, "#667eea")
+
+                st.markdown(f"""
+                <div class="job-card">
+                    <span style="display:inline-block;padding:0.2rem 0.7rem;border-radius:12px;background:{s_color}20;color:{s_color};font-weight:700;font-size:0.85rem;">{esc(status)}</span>
+                    <span style="color:#a0aec0;font-size:0.8rem;margin-left:0.5rem;">{updated}</span>
+                    <div style="margin-top:0.4rem;">
+                        <strong>👤 {esc(cand_name)}</strong> → <strong>📋 {esc(job_title)}</strong>
+                    </div>
+                    {f'<div style="color:#718096;font-size:0.85rem;">📝 {esc(p.get("memo",""))}</div>' if p.get("memo") else ''}
+                </div>""", unsafe_allow_html=True)
+
+                with st.expander(f"⚙️ 操作 - {cand_name}"):
+                    pu1, pu2 = st.columns(2)
+                    current_idx = PROPOSAL_STATUSES.index(status) if status in PROPOSAL_STATUSES else 0
+                    new_status = pu1.selectbox("ステータス", PROPOSAL_STATUSES, index=current_idx, key=f"pr_ns_{p['id']}")
+                    new_memo = pu2.text_input("メモ", value=p.get("memo", ""), key=f"pr_nm_{p['id']}")
+                    new_next = st.text_input("次のアクション", value=p.get("next_action", ""), key=f"pr_na_{p['id']}")
+
+                    uc1, uc2, uc3 = st.columns(3)
+                    if uc1.button("更新", type="primary", key=f"pr_upd_{p['id']}"):
+                        update_proposal_status(p["id"], new_status, new_memo, new_next)
+                        st.success("更新しました")
+                        st.rerun()
+                    if uc2.button("🗑️ 削除", key=f"pr_del_{p['id']}"):
+                        delete_proposal(p["id"])
+                        st.rerun()
+                    if uc3.button("🤖 進捗分析", key=f"pr_ai_{p['id']}"):
+                        analysis = generate_progress_analysis({**p, "job_title": job_title}, cand_info or None)
+                        st.session_state[f"pr_analysis_{p['id']}"] = analysis
+                    if st.session_state.get(f"pr_analysis_{p['id']}"):
+                        st.markdown(st.session_state[f"pr_analysis_{p['id']}"])
+
 
 
 # ############################################################
