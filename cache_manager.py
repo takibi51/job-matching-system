@@ -403,6 +403,46 @@ def get_saved_candidates() -> List[Dict]:
     return results
 
 
+def update_candidate(candidate_id: int, name: str = None, info: Dict = None,
+                     strengths: list = None, conditions: Dict = None):
+    """候補者情報を部分的に更新"""
+    import json
+    conn = _get_conn()
+    updates = []
+    params = []
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name)
+    if info is not None:
+        updates.append("info_json = ?")
+        params.append(json.dumps(info, ensure_ascii=False))
+    if strengths is not None:
+        updates.append("strengths_json = ?")
+        params.append(json.dumps(strengths, ensure_ascii=False))
+    if conditions is not None:
+        updates.append("conditions_json = ?")
+        params.append(json.dumps(conditions, ensure_ascii=False))
+    if not updates:
+        return
+    params.append(candidate_id)
+    conn.execute(f"UPDATE saved_candidates SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+
+
+def get_candidate_by_id(candidate_id: int) -> Optional[Dict]:
+    """IDで候補者を取得"""
+    import json
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM saved_candidates WHERE id = ?", (candidate_id,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["info"] = json.loads(d.pop("info_json", "{}"))
+    d["strengths"] = json.loads(d.pop("strengths_json", "[]"))
+    d["conditions"] = json.loads(d.pop("conditions_json", "{}"))
+    return d
+
+
 def delete_candidate(candidate_id: int):
     """候補者を削除"""
     conn = _get_conn()

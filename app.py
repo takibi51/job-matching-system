@@ -31,6 +31,7 @@ from cache_manager import (
     get_keywords, add_keyword, remove_keyword, get_enabled_keywords,
     add_collection_log, get_collection_logs,
     save_candidate, get_saved_candidates, delete_candidate,
+    update_candidate, get_candidate_by_id,
     save_proposal, update_proposal_status, get_proposals, delete_proposal, PROPOSAL_STATUSES,
     save_interview_sheet, update_interview_sheet, get_interview_sheets, delete_interview_sheet,
     get_app_setting, set_app_setting,
@@ -42,7 +43,7 @@ from ai_generator import (
     generate_proposal_resume, generate_interview_analysis,
     generate_progress_analysis, generate_job_improvements,
     evaluate_market_fit, MARKET_FIT_AXES,
-    generate_chat_response,
+    generate_chat_response, generate_candidate_profile,
 )
 
 # ============================================================
@@ -364,64 +365,200 @@ def _handle_chat(tab_key, message, context):
 @st.dialog("👤 候補者詳細", width="large")
 def show_candidate_popup(cand):
     info = cand.get("info", {})
-    strengths = cand.get("strengths", [])
     conditions = cand.get("conditions", {})
+    cid = cand.get("id", 0)
+
+    # プロフィール自動生成（保存済みデータ優先）
+    profile = generate_candidate_profile(cand)
     mf = evaluate_market_fit(cand)
 
-    h1, h2 = st.columns([3, 1])
-    with h1:
-        star = "⭐ " if mf["has_star"] else ""
-        st.markdown(f"### {star}{cand.get('name', '候補者')}")
-        if mf["reason"]:
-            st.caption(mf["reason"])
-    with h2:
-        st.caption(f"登録: {cand.get('created_at', '')[:10]}")
+    hard_skills = info.get("hard_skills", profile["hard_skills"])
+    soft_skills = info.get("soft_skills", profile["soft_skills"])
+    match_reasons = info.get("match_reasons", profile["match_reasons"])
+    market_score = info.get("market_score", profile["market_score"])
+    market_reasons = info.get("market_reasons", profile["market_reasons"])
+    career_summary = info.get("career_summary", profile["career_summary"])
+    personality_memo = info.get("personality_memo", profile["personality_memo"])
+    negative_checks = info.get("negative_checks", profile["negative_checks"])
 
-    p1, p2 = st.columns(2)
-    with p1:
-        st.markdown("**基本情報**")
-        for k, v in list(info.items())[:8]:
-            st.markdown(f"- **{k}**: {v}")
-    with p2:
-        st.markdown("**強み・スキル**")
-        for s in strengths[:6]:
-            if isinstance(s, (list, tuple)) and len(s) >= 2:
-                st.markdown(f"- **{s[0]}**: {s[1][:60]}")
-            elif isinstance(s, str):
-                st.markdown(f"- {s}")
+    # ===== ヘッダー =====
+    st.markdown(f"### {cand.get('name', '候補者')}")
+    st.caption(f"登録: {cand.get('created_at', '')[:10]}")
 
-    st.markdown("**希望条件**")
-    kw_tags = " ".join(f'`{k}`' for k in conditions.get("keywords", []))
-    c1, c2, c3 = st.columns(3)
-    c1.markdown(f"🔑 {kw_tags or 'なし'}")
-    c2.markdown(f"💰 {conditions.get('salary_min', 0)}〜{conditions.get('salary_max', 0)}万円")
-    c3.markdown(f"📍 {conditions.get('location', '未指定')}")
+    # ===== メインコンテンツ + AIサイドバー =====
+    main_col, ai_col = st.columns([3, 1])
 
-    st.markdown("**Market Fit 5軸**")
-    ax_cols = st.columns(5)
-    for i, axis in enumerate(MARKET_FIT_AXES):
-        val = mf["axes"].get(axis["id"], "neutral")
-        icon = "🟢" if val == "positive" else ("🟡" if val == "neutral" else "🔴")
-        ax_cols[i].markdown(f"{icon} {axis['label'].split('（')[0]}")
+    with ai_col:
+        st.markdown("**🤖 AIパートナー**")
+        if st.button("📝 スカウト文を提案", key=f"pop_scout_{cid}", use_container_width=True):
+            st.session_state[f"pop_ai_{cid}"] = generate_scout_message(cand)
+        if st.button("📋 企業向け提案文を生成", key=f"pop_resume_{cid}", use_container_width=True):
+            st.session_state[f"pop_ai_{cid}"] = generate_proposal_resume(cand)
+        if st.button("🎯 決定シナリオを考えて", key=f"pop_scenario_{cid}", use_container_width=True):
+            st.session_state[f"pop_ai_{cid}"] = generate_hireability(cand)
 
-    sheets = get_interview_sheets(cand.get("id")) if cand.get("id") else []
-    if sheets:
-        st.markdown(f"**📝 面談シート: {len(sheets)}件**")
+        ai_input = st.text_input("自由に質問...", key=f"pop_ai_input_{cid}", label_visibility="collapsed",
+                                 placeholder="自由に質問...")
+        if st.button("▶", key=f"pop_ai_send_{cid}"):
+            if ai_input and ai_input.strip():
+                resp = generate_chat_response(ai_input, {"candidate": cand})
+                st.session_state[f"pop_ai_{cid}"] = resp
+        st.caption("↑ ボタンをクリックまたは質問を入力")
 
-    st.markdown("---")
-    st.markdown("**🤖 AIアシスタント**")
-    a1, a2, a3, a4 = st.columns(4)
-    cid = cand.get("id", 0)
-    if a1.button("📝 スカウト文", key=f"pop_scout_{cid}"):
-        st.session_state[f"pop_ai_{cid}"] = generate_scout_message(cand)
-    if a2.button("⚠️ 懸念点", key=f"pop_conc_{cid}"):
-        st.session_state[f"pop_ai_{cid}"] = generate_concerns(cand)
-    if a3.button("📈 決まりやすさ", key=f"pop_hire_{cid}"):
-        st.session_state[f"pop_ai_{cid}"] = generate_hireability(cand)
-    if a4.button("📋 推薦文", key=f"pop_resume_{cid}"):
-        st.session_state[f"pop_ai_{cid}"] = generate_proposal_resume(cand)
+    with main_col:
+        # マッチ理由
+        st.markdown("#### 📋 マッチ理由")
+        for r in match_reasons:
+            st.markdown(f"• {r}")
+
+        # スキル
+        sk1, sk2 = st.columns(2)
+        with sk1:
+            st.markdown("#### 🔧 ハードスキル")
+            hs_html = " ".join(f'<span class="fit-tag">{esc(s)}</span>' for s in hard_skills)
+            st.markdown(hs_html or "情報なし", unsafe_allow_html=True)
+        with sk2:
+            st.markdown("#### 💡 ソフトスキル")
+            ss_html = " ".join(
+                f'<span class="fit-tag" style="background:#fef3c7;color:#92400e;">{esc(s)}</span>'
+                for s in soft_skills
+            )
+            st.markdown(ss_html or "情報なし", unsafe_allow_html=True)
+
+        # 市場決まりやすさ
+        score_label = "注目" if market_score >= 75 else ("良好" if market_score >= 60 else "")
+        badge_html = f' <span class="score-badge score-high">{score_label}</span>' if score_label else ""
+        st.markdown(f"#### ⭐ 市場決まりやすさ: {market_score}%{badge_html}", unsafe_allow_html=True)
+        for r in market_reasons:
+            st.markdown(f"• {r}")
+
+        # ネガティブチェック
+        if negative_checks:
+            st.markdown("#### ⚠️ ネガティブチェック")
+            for nc in negative_checks:
+                st.warning(nc)
+
+        # 希望条件
+        st.markdown("#### 🎯 希望条件")
+        sal_min = conditions.get("salary_min", 0)
+        sal_max = conditions.get("salary_max", 0)
+        pref_parts = []
+        if sal_min or sal_max:
+            pref_parts.append(f"💰 {sal_min}万〜{sal_max}万円")
+        if conditions.get("remote") or any("リモート" in str(v) for v in conditions.values()):
+            pref_parts.append("🏠 リモート希望")
+        pref_parts.append(f"📍 {conditions.get('location', '未指定')}")
+        st.markdown(" ・ ".join(pref_parts))
+
+        # 職務要約
+        st.markdown("#### 📝 職務要約")
+        st.markdown(career_summary or "情報なし")
+
+        # 人物タイプメモ（編集可能）
+        st.markdown("#### 🧠 人物タイプメモ")
+        edited_memo = st.text_area("人物タイプメモ", value=personality_memo or "", height=80,
+                                   key=f"popup_memo_{cid}", label_visibility="collapsed")
+
+    # AI応答表示
     if st.session_state.get(f"pop_ai_{cid}"):
-        st.markdown(st.session_state[f"pop_ai_{cid}"])
+        with st.expander("🤖 AI応答", expanded=True):
+            st.markdown(st.session_state[f"pop_ai_{cid}"])
+
+    # ===== フッターボタン =====
+    st.markdown("---")
+    sheets = get_interview_sheets(cid) if cid else []
+    proposals = get_proposals()
+    cand_proposals = [p for p in proposals if p.get("candidate_id") == cid]
+
+    f1, f2, f3, f4, f5 = st.columns(5)
+
+    # 書類DL
+    if f1.button("📄 書類DL", key=f"pop_dl_{cid}"):
+        dl_text = f"# {cand.get('name', '候補者')}\n\n"
+        dl_text += f"## 職務要約\n{career_summary}\n\n"
+        dl_text += f"## ハードスキル\n{'、'.join(hard_skills)}\n\n"
+        dl_text += f"## ソフトスキル\n{'、'.join(soft_skills)}\n\n"
+        dl_text += f"## 希望条件\n{' / '.join(pref_parts)}\n\n"
+        dl_text += f"## 人物タイプメモ\n{personality_memo}\n"
+        st.session_state[f"pop_dl_data_{cid}"] = dl_text
+
+    if st.session_state.get(f"pop_dl_data_{cid}"):
+        st.download_button("⬇️ ダウンロード", st.session_state[f"pop_dl_data_{cid}"],
+                           f"{cand.get('name', '候補者')}.md", "text/markdown",
+                           key=f"pop_dl_btn_{cid}")
+
+    # 面談シート確認
+    if f2.button("📝 面談シート確認", key=f"pop_iv_{cid}"):
+        st.session_state[f"pop_show_sheets_{cid}"] = not st.session_state.get(f"pop_show_sheets_{cid}", False)
+
+    # 進捗変更
+    with f3:
+        if cand_proposals:
+            current = cand_proposals[0].get("status", "提案済み")
+            new_st = st.selectbox("進捗変更...", PROPOSAL_STATUSES,
+                                  index=PROPOSAL_STATUSES.index(current) if current in PROPOSAL_STATUSES else 0,
+                                  key=f"pop_status_{cid}")
+            if new_st != current:
+                if st.button("変更", key=f"pop_status_save_{cid}"):
+                    update_proposal_status(cand_proposals[0]["id"], new_st)
+                    st.success(f"「{new_st}」に変更")
+                    st.rerun()
+        else:
+            st.caption("提案なし")
+
+    # 提案用レジュメ生成
+    if f4.button("📋 提案用レジュメ生成", key=f"pop_gen_resume_{cid}"):
+        st.session_state[f"pop_ai_{cid}"] = generate_proposal_resume(cand)
+
+    # 提案する
+    if f5.button("📤 提案する", key=f"pop_propose_{cid}", type="primary"):
+        st.session_state[f"pop_propose_mode_{cid}"] = not st.session_state.get(f"pop_propose_mode_{cid}", False)
+
+    # メモ保存
+    if edited_memo != (personality_memo or ""):
+        if st.button("💾 メモを保存", key=f"pop_save_memo_{cid}", type="primary"):
+            updated_info = {**info, "personality_memo": edited_memo}
+            update_candidate(cid, info=updated_info)
+            st.success("保存しました")
+            st.rerun()
+
+    # 面談シート表示
+    if st.session_state.get(f"pop_show_sheets_{cid}"):
+        st.markdown("---")
+        if sheets:
+            st.markdown("### 📝 面談シート")
+            for sheet in sheets:
+                created = sheet.get("created_at", "")[:16].replace("T", " ")
+                tags = sheet.get("tags", [])
+                tag_html = " ".join(f'<span class="fit-tag">#{esc(t)}</span>' for t in tags)
+                st.markdown(f"**{created}** {tag_html}", unsafe_allow_html=True)
+                edited_sheet = st.text_area("内容", value=sheet.get("sheet_content", ""),
+                                            height=200, key=f"pop_sheet_{sheet['id']}")
+                if edited_sheet != sheet.get("sheet_content", ""):
+                    if st.button("シートを保存", key=f"pop_sheet_save_{sheet['id']}"):
+                        update_interview_sheet(sheet["id"], edited_sheet, tags)
+                        st.success("面談シートを更新しました")
+                        st.rerun()
+        else:
+            st.info("面談シートがまだありません。「面談分析」タブで作成できます。")
+
+    # 提案モード
+    if st.session_state.get(f"pop_propose_mode_{cid}"):
+        st.markdown("---")
+        st.markdown("### 📤 提案先求人を選択")
+        all_jobs_list = get_all_jobs(limit=50)
+        if not all_jobs_list:
+            st.info("求人がありません。「データ取込」タブで登録してください。")
+        else:
+            for ji, j in enumerate(all_jobs_list[:10]):
+                jc1, jc2 = st.columns([4, 1])
+                jt_icon = "📌" if j.get("job_type") == "contracted" else "🌐"
+                jc1.markdown(f"{jt_icon} **{j.get('title', '')}** - {j.get('company', '')}")
+                if jc2.button("提案", key=f"pop_prop_j_{cid}_{ji}"):
+                    save_proposal(cid, j.get("url", ""), "提案済み", "")
+                    st.success(f"「{j.get('title', '')}」への提案を登録しました")
+                    st.session_state[f"pop_propose_mode_{cid}"] = False
+                    st.rerun()
 
 
 @st.dialog("📋 求人詳細", width="large")
@@ -438,7 +575,7 @@ def show_job_popup(job, candidates=None):
     with j2:
         url = job.get("url", "")
         if url and url.startswith("http"):
-            st.link_button("求人ページを開く", url)
+            st.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページを開く</a>', unsafe_allow_html=True)
         st.caption(f"ソース: {job.get('source', '')} / 更新: {job.get('updated_at', '')[:16]}")
 
     desc = job.get("description", "")
@@ -606,8 +743,8 @@ if page == "candidate_search":
                             st.success("提案を登録しました")
                             st.rerun()
                     url = job.get("url", "")
-                    if url and url.startswith("http"):
-                        qa3.link_button("🌐 求人ページ", url, key=f"cs_jext_{i}")
+                    if url and isinstance(url, str) and url.startswith("http"):
+                        qa3.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
 
                 with st.expander(f"📊 テーブル表示（{len(filtered)}件）"):
                     df = pd.DataFrame([{
@@ -689,7 +826,7 @@ elif page == "job_search":
                 show_job_popup(job, saved_cands)
             url = job.get("url", "")
             if url and url.startswith("http"):
-                jqa2.link_button("🌐 求人ページ", url, key=f"js_link_{i}")
+                jqa2.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
 
             cand_scores = []
             for cand in saved_cands:
@@ -802,7 +939,17 @@ elif page == "interview":
                     sheet_content += "\n\n" + ai_result.get("report", "")
 
                     sheet_id = save_interview_sheet(iv_cand["id"], raw_input, sheet_content, tags)
-                    st.success(f"面談シートを保存しました（ID: {sheet_id}）")
+
+                    # 候補者プロフィールを面談内容で自動充実化
+                    enriched = generate_candidate_profile(iv_cand, interview_text=raw_input)
+                    updated_info = dict(iv_cand.get("info", {}))
+                    for key in ["hard_skills", "soft_skills", "match_reasons", "market_score",
+                                "market_reasons", "career_summary", "personality_memo", "negative_checks"]:
+                        if enriched.get(key) and not updated_info.get(key):
+                            updated_info[key] = enriched[key]
+                    update_candidate(iv_cand["id"], info=updated_info)
+
+                    st.success(f"面談シートを保存し、候補者プロフィールを自動充実化しました（ID: {sheet_id}）")
                     st.markdown("---")
                     st.markdown("### 生成されたシート")
                     st.markdown(sheet_content)
@@ -836,8 +983,16 @@ elif page == "interview":
                     <div style="margin-top:0.3rem;">{tag_html}</div>
                 </div>""", unsafe_allow_html=True)
                 with st.expander(f"📋 詳細 - {cand_name}"):
-                    st.markdown(sheet.get("sheet_content", ""))
-                    if st.button("🗑️ 削除", key=f"iv_del_{sheet['id']}"):
+                    edited_content = st.text_area("内容", value=sheet.get("sheet_content", ""),
+                                                  height=250, key=f"iv_edit_{sheet['id']}",
+                                                  label_visibility="collapsed")
+                    iv_bc1, iv_bc2 = st.columns(2)
+                    if edited_content != sheet.get("sheet_content", ""):
+                        if iv_bc1.button("💾 保存", key=f"iv_save_{sheet['id']}"):
+                            update_interview_sheet(sheet["id"], edited_content, tags)
+                            st.success("更新しました")
+                            st.rerun()
+                    if iv_bc2.button("🗑️ 削除", key=f"iv_del_{sheet['id']}"):
                         delete_interview_sheet(sheet["id"])
                         st.rerun()
 
@@ -1134,8 +1289,18 @@ elif page == "data_import":
                     st.markdown(", ".join(f'`{k}`' for k in conds.get("keywords", [])) or "なし")
                 save_name = st.text_input("候補者名", value=up_file.name.rsplit(".", 1)[0], key="cm_name")
                 if st.button("保存", type="primary", key="cm_save"):
-                    save_candidate(save_name, info, cand_data.get("strengths", []), conds)
-                    st.success(f"「{save_name}」を保存しました")
+                    cid_new = save_candidate(save_name, info, cand_data.get("strengths", []), conds)
+                    # 自動プロフィール充実化
+                    tmp_cand = {"name": save_name, "info": info, "strengths": cand_data.get("strengths", []),
+                                "conditions": conds, "id": cid_new}
+                    enriched = generate_candidate_profile(tmp_cand)
+                    enriched_info = {**info}
+                    for key in ["hard_skills", "soft_skills", "match_reasons", "market_score",
+                                "market_reasons", "career_summary", "personality_memo"]:
+                        if enriched.get(key):
+                            enriched_info[key] = enriched[key]
+                    update_candidate(cid_new, info=enriched_info)
+                    st.success(f"「{save_name}」を保存し、プロフィールを自動生成しました")
                     st.rerun()
 
         csv_cands = load_all_candidates()

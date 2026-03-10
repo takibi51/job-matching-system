@@ -753,6 +753,107 @@ def generate_chat_response(message, context=None):
 お気軽にどうぞ！"""
 
 
+# ============================================================
+# 9. 候補者プロフィール自動生成
+# ============================================================
+
+def generate_candidate_profile(candidate, interview_text=None):
+    """候補者データ+面談テキストからプロト準拠のプロフィールを自動生成"""
+    f = _get_candidate_fields(candidate)
+    info = candidate.get("info", {})
+    conditions = candidate.get("conditions", {})
+
+    # --- ハードスキル抽出 ---
+    hard_skills = list(f["hard_skills"][:5])
+    if not hard_skills:
+        for k, v in info.items():
+            if any(w in k for w in ["スキル", "資格", "経験", "専門", "技術"]):
+                hard_skills.extend([s.strip() for s in str(v).replace("、", ",").split(",")[:3]])
+        hard_skills = hard_skills[:5] or ["専門スキル"]
+
+    # --- ソフトスキル抽出 ---
+    soft_keywords = {
+        "論理性": ["論理", "分析", "データ", "定量"],
+        "主体性": ["主体", "自発", "積極", "自ら"],
+        "コミュニケーション力": ["コミュニケ", "対話", "折衝", "交渉"],
+        "リーダーシップ": ["リーダー", "統括", "マネジ", "管理"],
+        "協調性": ["協調", "チーム", "連携", "協力"],
+        "創造性": ["企画", "クリエイ", "アイデア", "発想"],
+        "成長意欲": ["成長", "学習", "スキルアップ", "挑戦"],
+        "粘り強さ": ["粘り", "コミット", "やり遂げ", "達成"],
+    }
+    all_text = " ".join(str(v) for v in info.values()) + " ".join(str(s) for s in candidate.get("strengths", []))
+    if interview_text:
+        all_text += " " + interview_text
+    soft_skills = [skill for skill, kws in soft_keywords.items() if any(kw in all_text for kw in kws)]
+    if not soft_skills:
+        soft_skills = ["コミュニケーション力"]
+
+    # --- 市場スコア & 理由 ---
+    ms = f["market_score"]
+    market_reasons = []
+    if ms >= 80:
+        market_reasons.append(f"{f['job_type']}の経験者は高い需要があり、特に専門領域までかかわれる人材は希少")
+    elif ms >= 60:
+        market_reasons.append(f"{f['job_type']}領域の需要は安定しており、即戦力として評価されやすい")
+    if len(hard_skills) >= 2:
+        market_reasons.append(f"{'・'.join(hard_skills[:2])}の複合スキルがあるため、キャリアパスの幅が広い")
+    sal_min = conditions.get("salary_min", 0)
+    sal_max = conditions.get("salary_max", 0)
+    if sal_min and sal_max:
+        market_reasons.append(f"給与レンジが市場相場と合致しており、複数社から内定が出る可能性が高い")
+    if not market_reasons:
+        market_reasons = ["条件次第で高マッチが期待できる"]
+
+    # --- マッチ理由 ---
+    match_reasons = []
+    if f["job_type"]:
+        match_reasons.append(f"{f['job_type']}領域での豊富な実務経験")
+    if hard_skills and len(hard_skills) >= 2:
+        match_reasons.append(f"{'・'.join(hard_skills[:2])}のスキル")
+    if any(w in all_text for w in ["成長", "挑戦", "スタートアップ", "ベンチャー"]):
+        match_reasons.append("スタートアップでの成長意欲")
+    if any(w in all_text for w in ["マネジメント", "リーダー", "管理"]):
+        match_reasons.append("マネジメント経験")
+    if not match_reasons:
+        match_reasons = ["専門領域での実務経験", "成長意欲の高さ"]
+
+    # --- 職務要約 ---
+    career_summary = f["resume_summary"]
+    if not career_summary:
+        parts = []
+        for k in ["職歴", "経歴", "概要", "経験", "職務要約"]:
+            if k in info:
+                parts.append(str(info[k]))
+        career_summary = "。".join(parts[:2]) if parts else ""
+    if not career_summary:
+        career_summary = f"{f['job_type']}領域での経験を持ち、{'・'.join(hard_skills[:3])}のスキルを活かした業務に従事。"
+
+    # --- 人物タイプメモ ---
+    personality_parts = []
+    for k, v in info.items():
+        if any(w in k for w in ["人物", "印象", "性格", "特徴", "タイプ", "人柄"]):
+            personality_parts.append(str(v))
+    personality_memo = "。".join(personality_parts) if personality_parts else ""
+    if not personality_memo and soft_skills:
+        traits = "・".join(soft_skills[:3])
+        personality_memo = f"{traits}が特徴的なタイプ。"
+
+    # --- ネガティブチェック ---
+    negative_checks = list(f["negatives"])
+
+    return {
+        "hard_skills": hard_skills,
+        "soft_skills": soft_skills,
+        "market_score": ms,
+        "market_reasons": market_reasons[:4],
+        "match_reasons": match_reasons[:4],
+        "career_summary": career_summary,
+        "personality_memo": personality_memo,
+        "negative_checks": negative_checks,
+    }
+
+
 MARKET_FIT_AXES = [
     {"id": "demandFit", "label": "📈 市場需要一致度", "desc": "現在の市場で需要がある人材か"},
     {"id": "friction", "label": "🔄 条件摩擦の少なさ", "desc": "希望条件と市場相場のギャップが小さいか"},
