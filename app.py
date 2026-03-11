@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data_collector import (
     fetch_from_all_sources, parse_csv_upload, parse_text_input,
-    generate_search_urls, SOURCE_NAMES, get_fetch_log, set_jooble_api_key,
+    generate_search_urls, SOURCE_NAMES, get_fetch_log, set_jooble_api_key, _log,
 )
 from scorer import rank_jobs, generate_search_queries, score_job
 from candidate_loader import (
