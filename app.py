@@ -1797,7 +1797,7 @@ elif page == "data_import":
                 # 勤務地表示
                 _loc_str = f"📍{_loc}" if _loc else "📍全国"
 
-                kc1, kc2, kc3 = st.columns([5, 2, 1])
+                kc1, kc2, kc3, kc4 = st.columns([5, 1.5, 1.5, 0.5])
                 kc1.markdown(
                     f"**{esc(kw['keyword'])}** "
                     f"<span style='color:#888;font-size:0.85em;'>{_loc_str}</span><br>"
@@ -1805,15 +1805,25 @@ elif page == "data_import":
                     + (f" <span style='color:#aaa;font-size:0.7em;'>{_lf[:16].replace('T', ' ')}</span>" if _lf and _fs == "done" else ""),
                     unsafe_allow_html=True
                 )
+                # 今すぐ取得ボタン
+                _is_running = _get_bg_status()["status"] == "running"
+                if _fs == "fetching" or _is_running:
+                    kc2.button("取得中...", key=f"dm_now_kw_{kw['id']}", disabled=True)
+                else:
+                    if kc2.button("▶ 取得", key=f"dm_now_kw_{kw['id']}", help="このキーワードの求人を今すぐ取得"):
+                        start_bg_fetch([kw["keyword"]], kw.get("location", ""), list(SOURCE_NAMES))
+                        set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
+                        st.rerun()
+                # 自動取得ON/OFF
                 if _enabled:
-                    if kc2.button("自動取得OFF", key=f"dm_tog_kw_{kw['id']}", help="このキーワードを自動取得の対象外にします"):
+                    if kc3.button("自動OFF", key=f"dm_tog_kw_{kw['id']}", help="自動取得の対象外にする"):
                         toggle_keyword(kw["id"], False)
                         st.rerun()
                 else:
-                    if kc2.button("自動取得ON", key=f"dm_tog_kw_{kw['id']}", type="primary", help="このキーワードを自動取得の対象に戻します"):
+                    if kc3.button("自動ON", key=f"dm_tog_kw_{kw['id']}", type="primary", help="自動取得の対象に戻す"):
                         toggle_keyword(kw["id"], True)
                         st.rerun()
-                if kc3.button("🗑️", key=f"dm_del_kw_{kw['id']}", help="削除"):
+                if kc4.button("🗑️", key=f"dm_del_kw_{kw['id']}", help="削除"):
                     remove_keyword(kw["id"])
                     st.rerun()
 
