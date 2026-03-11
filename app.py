@@ -1807,6 +1807,44 @@ elif page == "data_import":
             st.markdown("---")
             st.markdown("**登録済みキーワード一覧**")
             all_kws = get_keywords()
+
+            # 取得中なら進捗パネルをキーワード一覧の上に表示
+            _kw_bg = _get_bg_status()
+            if _kw_bg["status"] == "running":
+                _kw_pct = _kw_bg["progress"]
+                _kw_found = _kw_bg.get("jobs_found", 0)
+                _kw_cur_src = esc(_kw_bg.get("current_source", ""))
+                _kw_cur_kw = esc(_kw_bg.get("current_kw", ""))
+                _kw_remain_txt = ""
+                try:
+                    _kw_st = datetime.fromisoformat(_kw_bg["started"])
+                    _kw_el = (_now_jst() - _kw_st).total_seconds()
+                    if _kw_pct > 3:
+                        _kw_rem = max(0, _kw_el / (_kw_pct / 100) - _kw_el)
+                        if _kw_rem < 60:
+                            _kw_remain_txt = f"残り約{int(_kw_rem)}秒"
+                        else:
+                            _kw_remain_txt = f"残り約{int(_kw_rem // 60)}分{int(_kw_rem % 60)}秒"
+                except (ValueError, TypeError):
+                    pass
+                _kw_remain_disp = _kw_remain_txt if _kw_remain_txt else "残り時間を計算中..."
+                st.markdown(
+                    f"""<div style="padding:12px 16px;border-radius:10px;background:linear-gradient(135deg,#667eea10,#764ba210);border:1px solid #667eea33;margin-bottom:12px;">
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+                        <div style="width:14px;height:14px;border:3px solid #667eea44;border-top:3px solid #667eea;border-radius:50%;animation:spin 1s linear infinite;"></div>
+                        <strong style="color:#667eea;">求人取得中 — {_kw_pct}%完了</strong>
+                        <span style="margin-left:auto;color:#888;font-size:0.85em;">⏳ {_kw_remain_disp}</span>
+                    </div>
+                    <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{_kw_pct}%">{_kw_pct}%</div></div>
+                    <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:0.82em;color:#666;">
+                        <span>📡 {_kw_cur_src}: 「{_kw_cur_kw}」</span>
+                        <span>📋 {_kw_found}件取得済み</span>
+                    </div>
+                    </div>
+                    <style>@keyframes spin{{from{{transform:rotate(0deg)}}to{{transform:rotate(360deg)}}}}</style>""",
+                    unsafe_allow_html=True
+                )
+
             if all_kws:
                 # ステータス集計
                 _kw_active = sum(1 for k in all_kws if k.get("enabled"))
@@ -1814,6 +1852,10 @@ elif page == "data_import":
                 _kw_pending = sum(1 for k in all_kws if k.get("fetch_status") in ("pending", "", None))
                 _kw_fetching = sum(1 for k in all_kws if k.get("fetch_status") == "fetching")
                 st.caption(f"合計 {len(all_kws)}件 ｜ 自動取得ON: {_kw_active} ｜ 取得済み: {_kw_done} ｜ 取得中: {_kw_fetching} ｜ 未取得: {_kw_pending}")
+
+            # 現在取得中のキーワード名を取得（バッジ表示用）
+            _running_kw_name = _kw_bg.get("current_kw", "") if _kw_bg["status"] == "running" else ""
+            _running_pct = _kw_bg.get("progress", 0) if _kw_bg["status"] == "running" else 0
 
             for kw in all_kws:
                 _fs = kw.get("fetch_status", "pending") or "pending"
@@ -1823,8 +1865,10 @@ elif page == "data_import":
                 _enabled = kw.get("enabled", 1)
 
                 # ステータスバッジ
-                if _fs == "fetching":
-                    _badge = '<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:10px;font-size:0.75em;">🔄 取得中</span>'
+                if _fs == "fetching" and kw["keyword"] == _running_kw_name:
+                    _badge = f'<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:10px;font-size:0.75em;">🔄 取得中 {_running_pct}%</span>'
+                elif _fs == "fetching":
+                    _badge = '<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:10px;font-size:0.75em;">🔄 取得待ち</span>'
                 elif _fs == "done":
                     _lf_short = _lf[:16].replace("T", " ") if _lf else ""
                     _badge = f'<span style="background:#d4edda;color:#155724;padding:2px 8px;border-radius:10px;font-size:0.75em;">✅ {_jf}件保存済み</span>'
