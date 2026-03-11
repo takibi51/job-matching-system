@@ -1466,13 +1466,97 @@ elif page == "data_import":
         if registered_kws:
             st.markdown("**有効キーワード:** " + ", ".join([f"「{kw['keyword']}」" for kw in registered_kws[:10]]))
 
+        # 職域×職種のプリセット辞書
+        _JOB_PRESETS = {
+            "IT・エンジニア": [
+                "フロントエンドエンジニア", "バックエンドエンジニア", "フルスタックエンジニア",
+                "インフラエンジニア", "SRE", "DevOps", "社内SE", "情報システム",
+                "データエンジニア", "データサイエンティスト", "AIエンジニア", "機械学習エンジニア",
+                "iOSエンジニア", "Androidエンジニア", "モバイルエンジニア",
+                "QAエンジニア", "テストエンジニア", "セキュリティエンジニア",
+                "Webエンジニア", "サーバーサイドエンジニア", "組み込みエンジニア",
+                "クラウドエンジニア", "ネットワークエンジニア", "DBA",
+            ],
+            "デザイン・クリエイティブ": [
+                "Webデザイナー", "UIデザイナー", "UXデザイナー", "UI/UXデザイナー",
+                "グラフィックデザイナー", "プロダクトデザイナー", "BXデザイナー",
+                "アートディレクター", "クリエイティブディレクター",
+                "動画クリエイター", "映像ディレクター", "イラストレーター",
+                "DTPデザイナー", "エディトリアルデザイナー", "3Dデザイナー",
+            ],
+            "マーケティング・広報": [
+                "Webマーケター", "デジタルマーケティング", "コンテンツマーケター",
+                "SEOコンサルタント", "広告運用", "SNSマーケター", "CRM担当",
+                "マーケティングマネージャー", "ブランドマネージャー",
+                "広報・PR", "IR", "コピーライター", "コンテンツディレクター",
+                "グロースハッカー", "プロダクトマーケティング",
+            ],
+            "営業・ビジネス": [
+                "法人営業", "個人営業", "ルート営業", "新規開拓営業",
+                "インサイドセールス", "フィールドセールス", "ソリューション営業",
+                "カスタマーサクセス", "カスタマーサポート", "テクニカルサポート",
+                "アカウントマネージャー", "セールスエンジニア",
+                "事業開発", "アライアンス", "パートナーセールス",
+            ],
+            "企画・マネジメント": [
+                "プロジェクトマネージャー", "プロダクトマネージャー",
+                "Webディレクター", "プロデューサー",
+                "事業企画", "経営企画", "商品企画", "サービス企画",
+                "新規事業", "経営戦略",
+            ],
+            "管理・コーポレート": [
+                "人事", "採用担当", "人事労務", "組織開発",
+                "経理", "財務", "管理会計", "経営管理",
+                "総務", "法務", "内部監査", "コンプライアンス",
+                "秘書", "アシスタント", "オフィスマネージャー",
+            ],
+            "コンサルティング": [
+                "ITコンサルタント", "戦略コンサルタント", "業務コンサルタント",
+                "人事コンサルタント", "組織コンサルタント", "DXコンサルタント",
+                "M&Aアドバイザー", "会計コンサルタント",
+            ],
+            "医療・ヘルスケア": [
+                "看護師", "准看護師", "保健師", "助産師",
+                "医師", "歯科医師", "薬剤師",
+                "理学療法士", "作業療法士", "言語聴覚士",
+                "臨床検査技師", "臨床工学技士", "放射線技師",
+                "管理栄養士", "介護福祉士", "社会福祉士",
+                "医療事務", "歯科衛生士", "歯科助手",
+                "ケアマネージャー", "介護職", "看護助手",
+                "柔道整復師", "鍼灸師",
+            ],
+            "教育・研修": [
+                "講師", "教員", "塾講師", "研修講師",
+                "キャリアアドバイザー", "キャリアコンサルタント",
+                "教育企画", "研修企画",
+            ],
+            "制作・ライティング": [
+                "Webライター", "編集者", "校正者", "コピーライター",
+                "テクニカルライター", "シナリオライター",
+                "カメラマン", "フォトグラファー", "翻訳者",
+            ],
+            "物流・製造": [
+                "物流管理", "倉庫管理", "SCM",
+                "生産管理", "品質管理", "品質保証",
+                "製造オペレーター", "設備保全",
+                "購買・調達", "バイヤー",
+            ],
+            "金融・不動産": [
+                "ファイナンシャルプランナー", "証券アナリスト",
+                "リスク管理", "融資審査", "資産運用",
+                "不動産営業", "不動産管理", "用地仕入",
+                "マンション管理", "プロパティマネジメント",
+            ],
+        }
+
         with st.expander("🔑 キーワード管理", expanded=True):
             kw_tab1, kw_tab2 = st.tabs(["📝 手動追加", "👤 候補者から追加"])
 
             with kw_tab1:
+                # フリーワード追加
                 with st.form("dm_add_kw"):
                     kc1, kc2 = st.columns([3, 1])
-                    new_kw = kc1.text_input("キーワード", placeholder="例: Webデザイナー")
+                    new_kw = kc1.text_input("フリーワード", placeholder="例: Webデザイナー 大阪")
                     new_kw_loc = kc2.text_input("勤務地（空欄=全国）", value="", key="dm_kw_loc")
                     if st.form_submit_button("追加"):
                         if new_kw.strip():
@@ -1480,49 +1564,107 @@ elif page == "data_import":
                                 st.success(f"「{new_kw}」を追加")
                                 st.rerun()
 
+                st.markdown("---")
+                st.markdown("**職域から選択して追加**")
+                _preset_domain = st.selectbox(
+                    "職域を選択", ["-- 選択してください --"] + list(_JOB_PRESETS.keys()),
+                    key="dm_preset_domain"
+                )
+                if _preset_domain != "-- 選択してください --":
+                    _preset_roles = _JOB_PRESETS[_preset_domain]
+                    _existing_kws_preset = {kw["keyword"] for kw in get_keywords()}
+                    _available_roles = [r for r in _preset_roles if r not in _existing_kws_preset]
+
+                    if _available_roles:
+                        _sel_all = st.checkbox("すべて選択", key=f"dm_preset_all_{_preset_domain}")
+                        _selected_roles = st.multiselect(
+                            f"{_preset_domain} の職種",
+                            _available_roles,
+                            default=_available_roles if _sel_all else [],
+                            key=f"dm_preset_roles_{_preset_domain}",
+                        )
+                        if _selected_roles:
+                            st.caption(f"**追加予定（{len(_selected_roles)}件）:** " +
+                                       ", ".join(f"「{r}」" for r in _selected_roles))
+                            if st.button("選択した職種をキーワード登録", type="primary", key="dm_preset_add"):
+                                _added = 0
+                                for r in _selected_roles:
+                                    if add_keyword(r, ""):
+                                        _added += 1
+                                st.success(f"{_added}件のキーワードを追加しました")
+                                st.rerun()
+                    else:
+                        st.info(f"{_preset_domain} の職種はすべて登録済みです")
+
             with kw_tab2:
                 st.caption("登録候補者のスキル・職種からキーワードを自動提案します")
                 _cands_for_kw = get_saved_candidates()
                 if _cands_for_kw:
                     _existing_kws = {kw["keyword"] for kw in get_keywords()}
+
+                    # 候補者選択（プルダウン）
+                    _cand_options = ["全ての候補者"] + [c["name"] for c in _cands_for_kw]
+                    _sel_cand = st.selectbox("候補者を選択", _cand_options, key="dm_sug_cand_sel")
+
+                    if _sel_cand == "全ての候補者":
+                        _target_cands = _cands_for_kw
+                    else:
+                        _target_cands = [c for c in _cands_for_kw if c["name"] == _sel_cand]
+
                     # カテゴリ別にキーワード候補を抽出
                     _sug_categories = {
-                        "🔧 スキル": {},
                         "💼 職種・職域": {},
+                        "🔧 スキル": {},
                         "📜 資格": {},
                         "🏢 業界": {},
                     }
-                    for c in _cands_for_kw:
+                    for c in _target_cands:
                         tags = c.get("tags", {})
                         info = c.get("info", {})
+                        # スキル（候補者ローダーの全キーワードを取得）
                         for s in tags.get("skills", []):
                             if s not in _existing_kws:
                                 _sug_categories["🔧 スキル"].setdefault(s, []).append(c["name"])
+                        # 職種
                         for s in tags.get("job_domains", []):
                             if s not in _existing_kws:
                                 _sug_categories["💼 職種・職域"].setdefault(s, []).append(c["name"])
-                        desired = info.get("desired_position") or info.get("current_position", "")
-                        if desired and desired not in _existing_kws:
-                            _sug_categories["💼 職種・職域"].setdefault(desired, []).append(c["name"])
+                        # 現在・希望職種
+                        for key in ["desired_position", "current_position", "希望職種", "職種",
+                                     "役職", "ポジション"]:
+                            val = info.get(key, "")
+                            if val and val not in _existing_kws:
+                                _sug_categories["💼 職種・職域"].setdefault(val, []).append(c["name"])
+                        # 資格
                         for s in tags.get("certifications", []):
                             if s not in _existing_kws:
                                 _sug_categories["📜 資格"].setdefault(s, []).append(c["name"])
+                        # 業界
                         for s in tags.get("industries", []):
                             if s not in _existing_kws:
                                 _sug_categories["🏢 業界"].setdefault(s, []).append(c["name"])
 
                     _has_any = any(v for v in _sug_categories.values())
                     if _has_any:
+                        # 全選択
+                        _all_sug_kws = []
+                        for cat_kws in _sug_categories.values():
+                            _all_sug_kws.extend(cat_kws.keys())
+                        _select_all_cand = st.checkbox(
+                            f"すべて選択（{len(_all_sug_kws)}件）", key="dm_sug_select_all"
+                        )
+
                         _selected_sugs = []
                         for cat_name, cat_kws in _sug_categories.items():
                             if not cat_kws:
                                 continue
-                            st.markdown(f"**{cat_name}**")
+                            st.markdown(f"**{cat_name}**（{len(cat_kws)}件）")
                             _sorted = sorted(cat_kws.items(), key=lambda x: len(x[1]), reverse=True)
-                            for sug_kw, cand_names in _sorted[:10]:
+                            for sug_kw, cand_names in _sorted:
                                 _unique_names = list(set(cand_names))[:3]
                                 label = f"{sug_kw} ← {', '.join(_unique_names)}"
-                                if st.checkbox(label, key=f"dm_sug_{cat_name}_{sug_kw}"):
+                                checked = _select_all_cand or st.session_state.get(f"dm_sug_{cat_name}_{sug_kw}", False)
+                                if st.checkbox(label, value=checked, key=f"dm_sug_{cat_name}_{sug_kw}"):
                                     _selected_sugs.append(sug_kw)
                         if _selected_sugs:
                             st.markdown("---")
