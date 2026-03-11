@@ -126,6 +126,21 @@ def _log_access(event_type: str, detail: str = ""):
 # ============================================================
 # メイン認証関数
 # ============================================================
+def _get_correct_password() -> str:
+    """secrets.toml / 環境変数 / デフォルトからパスワードを取得"""
+    # 1. secrets.toml の password キー（プレーン）
+    try:
+        return st.secrets["auth"]["password"]
+    except (KeyError, FileNotFoundError, AttributeError):
+        pass
+    # 2. 環境変数
+    env_pw = os.environ.get("MATCH_PASSWORD")
+    if env_pw:
+        return env_pw
+    # 3. デフォルト
+    return _DEFAULT_PASSWORD
+
+
 def check_password() -> bool:
     """パスワード認証画面を表示。認証済みならTrueを返す。"""
 
@@ -159,10 +174,8 @@ def check_password() -> bool:
             st.warning("パスワードを入力してください。")
             return False
 
-        password_hash = _get_password_hash()
-
-        # ハッシュ比較 or プレーンテキスト比較（フォールバック）
-        is_valid = _verify_password(password, password_hash)
+        correct_password = _get_correct_password()
+        is_valid = hmac.compare_digest(password, correct_password)
 
         if is_valid:
             st.session_state["authenticated"] = True

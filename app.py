@@ -28,7 +28,7 @@ from candidate_loader import (
 )
 from cache_manager import (
     save_jobs, search_jobs, get_all_jobs, get_stats, delete_old_jobs, clear_all,
-    get_keywords, add_keyword, remove_keyword, get_enabled_keywords,
+    get_keywords, add_keyword, remove_keyword, get_enabled_keywords, toggle_keyword,
     add_collection_log, get_collection_logs,
     save_candidate, get_saved_candidates, delete_candidate,
     update_candidate, get_candidate_by_id, save_candidate_file, get_candidate_files,
@@ -38,6 +38,7 @@ from cache_manager import (
     add_chat_message, get_chat_history, clear_chat_history,
     update_job_type, get_job_type_stats,
 )
+from streamlit_autorefresh import st_autorefresh
 from ai_generator import (
     generate_scout_message, generate_concerns, generate_hireability,
     generate_proposal_resume, generate_interview_analysis,
@@ -1416,6 +1417,28 @@ elif page == "data_import":
         st.markdown("### Web求人の自動取得")
         st.caption("求人サイトからキーワード検索で自動取得。バックグラウンドで実行されます。")
 
+        # --- 半日自動更新チェック ---
+        _AUTO_REFRESH_HOURS = 12
+        _last_auto = get_app_setting("last_auto_fetch_at")
+        _now_ts = datetime.now()
+        if _last_auto:
+            try:
+                _last_dt = datetime.fromisoformat(_last_auto)
+                _hours_since = (_now_ts - _last_dt).total_seconds() / 3600
+            except (ValueError, TypeError):
+                _hours_since = _AUTO_REFRESH_HOURS + 1
+        else:
+            _hours_since = _AUTO_REFRESH_HOURS + 1
+
+        _auto_kws = get_enabled_keywords()
+        if _hours_since >= _AUTO_REFRESH_HOURS and _auto_kws and _get_bg_status()["status"] != "running":
+            _auto_kw_list = [kw["keyword"] for kw in _auto_kws]
+            _auto_sources = list(SOURCE_NAMES)
+            if start_bg_fetch(_auto_kw_list, "大阪", _auto_sources):
+                set_app_setting("last_auto_fetch_at", _now_ts.isoformat())
+                st.toast("🔄 半日ごとの自動更新を開始しました")
+                st.rerun()
+
         st.markdown("**取得ソース:**")
         enabled_sources = []
         src_cols = st.columns(len(SOURCE_NAMES))
@@ -1425,30 +1448,95 @@ elif page == "data_import":
 
         registered_kws = get_enabled_keywords()
         if registered_kws:
-            st.markdown("**キーワード:** " + ", ".join([f"「{kw['keyword']}」" for kw in registered_kws[:10]]))
+            st.markdown("**有効キーワード:** " + ", ".join([f"「{kw['keyword']}」" for kw in registered_kws[:10]]))
 
-        with st.expander("🔑 キーワード管理"):
-            with st.form("dm_add_kw"):
-                kc1, kc2 = st.columns([3, 1])
-                new_kw = kc1.text_input("キーワード", placeholder="例: Webデザイナー")
-                new_kw_loc = kc2.text_input("勤務地", value="大阪", key="dm_kw_loc")
-                if st.form_submit_button("追加"):
-                    if new_kw.strip():
-                        if add_keyword(new_kw.strip(), new_kw_loc.strip()):
-                            st.success(f"「{new_kw}」を追加")
+        with st.expander("🔑 キーワード管理", expanded=True):
+            kw_tab1, kw_tab2 = st.tabs(["📝 手動追加", "👤 候補者から追加"])
+
+            with kw_tab1:
+                with st.form("dm_add_kw"):
+                    kc1, kc2 = st.columns([3, 1])
+                    new_kw = kc1.text_input("キーワード", placeholder="例: Webデザイナー")
+                    new_kw_loc = kc2.text_input("勤務地", value="大阪", key="dm_kw_loc")
+                    if st.form_submit_button("追加"):
+                        if new_kw.strip():
+                            if add_keyword(new_kw.strip(), new_kw_loc.strip()):
+                                st.success(f"「{new_kw}」を追加")
+                                st.rerun()
+
+            with kw_tab2:
+                st.caption("登録候補者のスキル・職種からキーワードを自動提案します")
+                _cands_for_kw = get_saved_candidates()
+                if _cands_for_kw:
+                    # 候補者からキーワード候補を抽出
+                    _existing_kws = {kw["keyword"] for kw in get_keywords()}
+                    _suggest_kws = {}
+                    for c in _cands_for_kw:
+                        tags = c.get("tags", {})
+                        info = c.get("info", {})
+                        # スキル
+                        for s in tags.get("skills", []):
+                            if s not in _existing_kws:
+                                _suggest_kws.setdefault(s, []).append(c["name"])
+                        # 職種キーワード
+                        for s in tags.get("job_domains", []):
+                            if s not in _existing_kws:
+                                _suggest_kws.setdefault(s, []).append(c["name"])
+                        # 希望職種
+                        desired = info.get("desired_position") or info.get("current_position", "")
+                        if desired and desired not in _existing_kws:
+                            _suggest_kws.setdefault(desired, []).append(c["name"])
+
+                    if _suggest_kws:
+                        _sorted_suggests = sorted(_suggest_kws.items(), key=lambda x: len(x[1]), reverse=True)
+                        _selected_sugs = []
+                        for sug_kw, cand_names in _sorted_suggests[:20]:
+                            if st.checkbox(f"{sug_kw}（{', '.join(set(cand_names)[:2])}）", key=f"dm_sug_{sug_kw}"):
+                                _selected_sugs.append(sug_kw)
+                        if _selected_sugs and st.button("選択したキーワードを登録", type="primary", key="dm_sug_add"):
+                            for skw in _selected_sugs:
+                                add_keyword(skw, "大阪")
+                            st.success(f"{len(_selected_sugs)}件のキーワードを追加しました")
                             st.rerun()
+                    else:
+                        st.info("追加可能なキーワード候補はありません（全て登録済み）")
+                else:
+                    st.info("候補者が登録されていません。先に候補者を登録してください。")
+
+            st.markdown("---")
+            st.markdown("**登録済みキーワード一覧**")
             all_kws = get_keywords()
             for kw in all_kws:
-                kc1, kc2 = st.columns([5, 1])
+                kc1, kc2, kc3 = st.columns([4, 1, 1])
                 kc1.markdown(f"{'✅' if kw['enabled'] else '⏸️'} **{kw['keyword']}**（{kw.get('location','')}）")
-                if kc2.button("削除", key=f"dm_del_kw_{kw['id']}"):
+                if kw['enabled']:
+                    if kc2.button("⏸️ 無効", key=f"dm_tog_kw_{kw['id']}"):
+                        toggle_keyword(kw["id"], False)
+                        st.rerun()
+                else:
+                    if kc2.button("✅ 有効", key=f"dm_tog_kw_{kw['id']}"):
+                        toggle_keyword(kw["id"], True)
+                        st.rerun()
+                if kc3.button("🗑️", key=f"dm_del_kw_{kw['id']}"):
                     remove_keyword(kw["id"])
                     st.rerun()
 
         fetch_loc = st.text_input("取得勤務地", value="大阪", key="dm_fetch_loc")
 
+        # 自動更新状態の表示
+        if _last_auto:
+            try:
+                _disp_dt = datetime.fromisoformat(_last_auto)
+                from datetime import timedelta as _td
+                _next_dt = _disp_dt + _td(hours=_AUTO_REFRESH_HOURS)
+                st.caption(f"⏰ 前回の自動取得: {_disp_dt.strftime('%Y-%m-%d %H:%M')} ／ 次回: {_next_dt.strftime('%Y-%m-%d %H:%M')}頃")
+            except (ValueError, TypeError):
+                pass
+
         bg = _get_bg_status()
         if bg["status"] == "running":
+            # 進捗ポーリング: 2秒ごとに再描画
+            st_autorefresh(interval=2000, limit=300, key="bg_fetch_refresh")
             pct = bg["progress"]
             st.markdown(
                 f'<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>',
@@ -1456,6 +1544,18 @@ elif page == "data_import":
             )
             st.caption(bg["progress_detail"])
             st.info("🔄 取得中... 他のタブで作業を続けられます。")
+        elif bg["status"] == "done":
+            st.success(bg["result"])
+            if st.button("OK", key="dm_bg_clear"):
+                with _BG_LOCK:
+                    _bg_state["status"] = "idle"
+                st.rerun()
+        elif bg["status"] == "error":
+            st.error(bg["result"])
+            if st.button("OK", key="dm_bg_err_clear"):
+                with _BG_LOCK:
+                    _bg_state["status"] = "idle"
+                st.rerun()
         else:
             if st.button("🔄 Web求人を自動取得", type="primary", use_container_width=True, key="dm_fetch"):
                 kw_list = [kw["keyword"] for kw in registered_kws]
@@ -1465,7 +1565,7 @@ elif page == "data_import":
                     st.error("ソースを1つ以上選択してください")
                 else:
                     if start_bg_fetch(kw_list, fetch_loc, enabled_sources):
-                        st.info("🔄 バックグラウンドで取得を開始しました。")
+                        set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
                         st.rerun()
 
         logs = get_collection_logs(5)
