@@ -265,14 +265,19 @@ def fetch_jooble(keyword: str, location: str = "", max_pages: int = 3) -> List[D
     for page in range(1, max_pages + 1):
         _rate_limit("jooble.org", 1.0)
         try:
-            payload = {
-                "keywords": keyword,
-                "location": location or "日本",
-                "page": page,
-            }
-
             data = None
             for endpoint in _jooble_endpoints:
+                # jp.jooble.orgは既に日本限定なのでlocationは都道府県のみ
+                # jooble.org（国際版）の場合は"日本"を付与
+                if "jp.jooble.org" in endpoint:
+                    _loc = location  # ユーザー指定の都道府県をそのまま使用
+                else:
+                    _loc = location or "日本"  # 国際版は"日本"でフィルタ
+                payload = {
+                    "keywords": keyword,
+                    "location": _loc,
+                    "page": page,
+                }
                 _log(f"Jooble API: POST {endpoint[:45]}... payload={payload}")
                 resp = requests.post(
                     endpoint,
