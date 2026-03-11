@@ -233,8 +233,8 @@ def _parse_careerjet_article_re(art_html: str, default_location: str = "") -> Op
 # 2. Jooble API（公開REST API — 認証不要でもテスト可能）
 # ============================================================
 
-# Jooble APIキー（設定から取得、未設定でもデフォルトで動作テスト）
-_JOOBLE_API_KEY = ""
+# Jooble APIキー（環境変数 → 設定 のフォールバック）
+_JOOBLE_API_KEY = os.environ.get("JOOBLE_API_KEY", "")
 
 
 def set_jooble_api_key(key: str):

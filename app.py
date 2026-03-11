@@ -55,12 +55,14 @@ from ai_generator import (
 from auth import check_password, check_session_timeout, render_logout_button, safe_url
 
 # ============================================================
-# Jooble APIキー読み込み（st.secrets → DB設定のフォールバック）
+# Jooble APIキー読み込み（環境変数 → st.secrets → DB設定のフォールバック）
 # ============================================================
-try:
-    _jooble_key = st.secrets.get("api_keys", {}).get("jooble", "")
-except Exception:
-    _jooble_key = ""
+_jooble_key = os.environ.get("JOOBLE_API_KEY", "")
+if not _jooble_key:
+    try:
+        _jooble_key = st.secrets.get("api_keys", {}).get("jooble", "")
+    except Exception:
+        pass
 if not _jooble_key:
     _jooble_key = get_app_setting("jooble_api_key", "")
 if _jooble_key:
@@ -105,10 +107,20 @@ check_session_timeout()
 
 def run_fetch_sync(kw_list, location, sources, status_container=None):
     """求人を同期的に取得（進捗をst.status()でリアルタイム表示）"""
-    # Jooble APIキーを確実に再読み込み（デプロイ後のDB復元対策）
-    _key = get_app_setting("jooble_api_key", "")
+    # Jooble APIキーを確実に再読み込み（環境変数 → st.secrets → DB のフォールバック）
+    _key = os.environ.get("JOOBLE_API_KEY", "")
+    if not _key:
+        try:
+            _key = st.secrets.get("api_keys", {}).get("jooble", "")
+        except Exception:
+            pass
+    if not _key:
+        _key = get_app_setting("jooble_api_key", "")
     if _key:
         set_jooble_api_key(_key)
+        _log(f"🔑 APIキー読み込み済み: {_key[:8]}...")
+    else:
+        _log("⚠️ Jooble APIキーが見つかりません（環境変数 / st.secrets / DB すべて未設定）")
 
     start = _time.time()
     total_steps = len(kw_list) * len(sources)
