@@ -179,6 +179,17 @@ def _init_db(conn: sqlite3.Connection):
     except sqlite3.OperationalError:
         pass  # 既に存在
 
+    # collection_keywords に取得状態カラム追加
+    for col, default in [
+        ("last_fetched_at", "''"),
+        ("jobs_found", "0"),
+        ("fetch_status", "'pending'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE collection_keywords ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
+
     conn.commit()
 
 
@@ -388,6 +399,22 @@ def get_enabled_keywords() -> List[Dict]:
         "SELECT * FROM collection_keywords WHERE enabled = 1"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def update_keyword_status(keyword: str, status: str, jobs_found: int = 0):
+    """キーワードの取得状態を更新（pending/fetching/done/error）"""
+    conn = _get_conn()
+    if status == "done":
+        conn.execute(
+            "UPDATE collection_keywords SET fetch_status = ?, jobs_found = ?, last_fetched_at = ? WHERE keyword = ?",
+            (status, str(jobs_found), datetime.now().isoformat(), keyword)
+        )
+    else:
+        conn.execute(
+            "UPDATE collection_keywords SET fetch_status = ? WHERE keyword = ?",
+            (status, keyword)
+        )
+    conn.commit()
 
 
 def add_collection_log(keywords_used: int, jobs_found: int, jobs_saved: int,

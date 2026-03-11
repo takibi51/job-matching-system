@@ -29,7 +29,7 @@ from candidate_loader import (
 from cache_manager import (
     save_jobs, search_jobs, get_all_jobs, get_stats, delete_old_jobs, clear_all,
     get_keywords, add_keyword, remove_keyword, get_enabled_keywords, toggle_keyword,
-    add_collection_log, get_collection_logs,
+    update_keyword_status, add_collection_log, get_collection_logs,
     save_candidate, get_saved_candidates, delete_candidate,
     update_candidate, get_candidate_by_id, save_candidate_file, get_candidate_files,
     save_proposal, update_proposal_status, get_proposals, delete_proposal, PROPOSAL_STATUSES,
@@ -92,10 +92,18 @@ def _bg_fetch_worker(kw_list, location, sources):
             _bg_state["current_source"] = ""
             _bg_state["current_kw"] = ""
 
+        # 全キーワードをfetchingに
+        for kw in kw_list:
+            try:
+                update_keyword_status(kw, "fetching")
+            except Exception:
+                pass
+
         start = _time.time()
         total_steps = len(kw_list) * len(sources)
         completed = 0
         all_jobs = []
+        kw_jobs_count = {kw: 0 for kw in kw_list}
 
         for si, source_name in enumerate(sources):
             for ki, kw in enumerate(kw_list):
@@ -104,7 +112,6 @@ def _bg_fetch_worker(kw_list, location, sources):
                     _bg_state["progress"] = pct
                     _bg_state["current_source"] = source_name
                     _bg_state["current_kw"] = kw
-                    elapsed_so_far = _time.time() - start
                     _bg_state["progress_detail"] = (
                         f"{source_name}: 「{kw}」取得中... "
                         f"({completed + 1}/{total_steps})"
@@ -113,13 +120,19 @@ def _bg_fetch_worker(kw_list, location, sources):
                 try:
                     jobs = fetch_from_all_sources([kw], location, enabled_sources=[source_name])
                     all_jobs.extend(jobs)
+                    kw_jobs_count[kw] = kw_jobs_count.get(kw, 0) + len(jobs)
                     with _BG_LOCK:
                         _bg_state["jobs_found"] = len(all_jobs)
                 except Exception:
                     pass
                 completed += 1
-                with _BG_LOCK:
-                    _bg_state["completed_kws"] = min(ki + 1, len(kw_list)) if si == len(sources) - 1 else ki
+
+        # キーワードごとの結果をDBに保存
+        for kw in kw_list:
+            try:
+                update_keyword_status(kw, "done", kw_jobs_count.get(kw, 0))
+            except Exception:
+                pass
 
         elapsed = _time.time() - start
         with _BG_LOCK:
@@ -1749,18 +1762,58 @@ elif page == "data_import":
             st.markdown("---")
             st.markdown("**登録済みキーワード一覧**")
             all_kws = get_keywords()
+            if all_kws:
+                # ステータス集計
+                _kw_active = sum(1 for k in all_kws if k.get("enabled"))
+                _kw_done = sum(1 for k in all_kws if k.get("fetch_status") == "done")
+                _kw_pending = sum(1 for k in all_kws if k.get("fetch_status") in ("pending", "", None))
+                _kw_fetching = sum(1 for k in all_kws if k.get("fetch_status") == "fetching")
+                st.caption(f"合計 {len(all_kws)}件 ｜ 自動取得ON: {_kw_active} ｜ 取得済み: {_kw_done} ｜ 取得中: {_kw_fetching} ｜ 未取得: {_kw_pending}")
+
             for kw in all_kws:
-                kc1, kc2, kc3 = st.columns([4, 1, 1])
-                kc1.markdown(f"{'✅' if kw['enabled'] else '⏸️'} **{kw['keyword']}**（{kw.get('location','')}）")
-                if kw['enabled']:
-                    if kc2.button("⏸️ 無効", key=f"dm_tog_kw_{kw['id']}"):
+                _fs = kw.get("fetch_status", "pending") or "pending"
+                _jf = kw.get("jobs_found", "0") or "0"
+                _lf = kw.get("last_fetched_at", "") or ""
+                _loc = kw.get("location", "")
+                _enabled = kw.get("enabled", 1)
+
+                # ステータスバッジ
+                if _fs == "fetching":
+                    _badge = '<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:10px;font-size:0.75em;">🔄 取得中</span>'
+                elif _fs == "done":
+                    _lf_short = _lf[:16].replace("T", " ") if _lf else ""
+                    _badge = f'<span style="background:#d4edda;color:#155724;padding:2px 8px;border-radius:10px;font-size:0.75em;">✅ {_jf}件取得</span>'
+                elif _fs == "error":
+                    _badge = '<span style="background:#f8d7da;color:#721c24;padding:2px 8px;border-radius:10px;font-size:0.75em;">❌ エラー</span>'
+                else:
+                    _badge = '<span style="background:#e2e3e5;color:#383d41;padding:2px 8px;border-radius:10px;font-size:0.75em;">⏳ 未取得</span>'
+
+                # 有効/無効バッジ
+                if not _enabled:
+                    _toggle_badge = '<span style="background:#f0f0f0;color:#999;padding:2px 8px;border-radius:10px;font-size:0.75em;">自動取得OFF</span>'
+                else:
+                    _toggle_badge = ""
+
+                # 勤務地表示
+                _loc_str = f"📍{_loc}" if _loc else "📍全国"
+
+                kc1, kc2, kc3 = st.columns([5, 2, 1])
+                kc1.markdown(
+                    f"**{esc(kw['keyword'])}** "
+                    f"<span style='color:#888;font-size:0.85em;'>{_loc_str}</span><br>"
+                    f"{_badge} {_toggle_badge}"
+                    + (f" <span style='color:#aaa;font-size:0.7em;'>{_lf[:16].replace('T', ' ')}</span>" if _lf and _fs == "done" else ""),
+                    unsafe_allow_html=True
+                )
+                if _enabled:
+                    if kc2.button("自動取得OFF", key=f"dm_tog_kw_{kw['id']}", help="このキーワードを自動取得の対象外にします"):
                         toggle_keyword(kw["id"], False)
                         st.rerun()
                 else:
-                    if kc2.button("✅ 有効", key=f"dm_tog_kw_{kw['id']}"):
+                    if kc2.button("自動取得ON", key=f"dm_tog_kw_{kw['id']}", type="primary", help="このキーワードを自動取得の対象に戻します"):
                         toggle_keyword(kw["id"], True)
                         st.rerun()
-                if kc3.button("🗑️", key=f"dm_del_kw_{kw['id']}"):
+                if kc3.button("🗑️", key=f"dm_del_kw_{kw['id']}", help="削除"):
                     remove_keyword(kw["id"])
                     st.rerun()
 
