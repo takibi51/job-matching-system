@@ -11,7 +11,6 @@ import sys
 import os
 import html
 import re
-import threading
 import time as _time
 from datetime import datetime, timezone, timedelta
 
@@ -45,7 +44,6 @@ from cache_manager import (
     add_chat_message, get_chat_history, clear_chat_history,
     update_job_type, get_job_type_stats,
 )
-from streamlit_autorefresh import st_autorefresh
 from ai_generator import (
     generate_scout_message, generate_concerns, generate_hireability,
     generate_proposal_resume, generate_interview_analysis,
@@ -90,161 +88,69 @@ if not check_password():
 check_session_timeout()
 
 # ============================================================
-# バックグラウンド取得（スレッドセーフ・進捗%対応）
+# 同期取得（Streamlit Cloud対応 — st.status()でリアルタイム進捗）
 # ============================================================
-_BG_LOCK = threading.Lock()
-_bg_state = {
-    "status": "idle", "result": "", "started": "",
-    "progress": 0, "progress_detail": "",
-    "jobs_found": 0, "current_source": "", "current_kw": "",
-    "total_kws": 0, "completed_kws": 0,
-}
 
+def run_fetch_sync(kw_list, location, sources, status_container=None):
+    """求人を同期的に取得（進捗をst.status()でリアルタイム表示）"""
+    start = _time.time()
+    total_steps = len(kw_list) * len(sources)
+    completed = 0
+    all_jobs = []
+    seen_urls = set()
 
-def _bg_fetch_worker(kw_list, location, sources):
-    """別スレッドで求人取得を実行（進捗%・件数をリアルタイム更新）"""
-    try:
-        with _BG_LOCK:
-            _bg_state["status"] = "running"
-            _bg_state["started"] = _now_jst().isoformat()
-            _bg_state["progress"] = 0
-            _bg_state["progress_detail"] = "準備中..."
-            _bg_state["jobs_found"] = 0
-            _bg_state["total_kws"] = len(kw_list)
-            _bg_state["completed_kws"] = 0
-            _bg_state["current_source"] = ""
-            _bg_state["current_kw"] = ""
-
-        # 全キーワードをfetchingに
-        for kw in kw_list:
-            try:
-                update_keyword_status(kw, "fetching")
-            except Exception:
-                pass
-
-        start = _time.time()
-        total_steps = len(kw_list) * len(sources)
-        completed = 0
-        all_jobs = []
-        seen_urls = set()  # URL重複を正確にトラッキング
-
-        for si, source_name in enumerate(sources):
-            for ki, kw in enumerate(kw_list):
-                with _BG_LOCK:
-                    pct = int((completed / max(total_steps, 1)) * 100)
-                    _bg_state["progress"] = pct
-                    _bg_state["current_source"] = source_name
-                    _bg_state["current_kw"] = kw
-                    _bg_state["progress_detail"] = (
-                        f"{source_name}: 「{kw}」取得中... "
-                        f"({completed + 1}/{total_steps})"
-                    )
-
-                try:
-                    jobs = fetch_from_all_sources([kw], location, enabled_sources=[source_name])
-                    # URL重複を除外して正確な件数を追跡
-                    for job in jobs:
-                        url = job.get("url", "")
-                        if url and url not in seen_urls:
-                            seen_urls.add(url)
-                            all_jobs.append(job)
-                    with _BG_LOCK:
-                        _bg_state["jobs_found"] = len(all_jobs)
-                except Exception as _fetch_err:
-                    import traceback
-                    traceback.print_exc()  # Streamlit Cloudログに出力
-                completed += 1
-
-        # DB保存 → 実際の新規保存件数を取得
-        elapsed = _time.time() - start
-        with _BG_LOCK:
-            _bg_state["progress"] = 100
-            if all_jobs:
-                saved = save_jobs(all_jobs)
-                add_collection_log(len(kw_list), len(all_jobs), saved, ",".join(sources), elapsed)
-                _bg_state["result"] = f"✅ {saved}件を新規保存（{elapsed:.1f}秒・{len(all_jobs)}件中）"
-            else:
-                add_collection_log(len(kw_list), 0, 0, ",".join(sources), elapsed)
-                _bg_state["result"] = "⚠️ 取得0件でした（取得ログを確認してください）"
-            _bg_state["progress_detail"] = "完了"
-            _bg_state["jobs_found"] = saved if all_jobs else 0
-            _bg_state["status"] = "done"
-
-        # キーワードごとの実際のDB件数を更新
-        for kw in kw_list:
-            try:
-                update_keyword_status(kw, "done")
-            except Exception:
-                pass
-    except Exception as e:
-        with _BG_LOCK:
-            _bg_state["status"] = "error"
-            _bg_state["result"] = f"❌ エラー: {e}"
-
-
-_bg_thread = None  # バックグラウンドスレッド参照
-_BG_STALE_SECONDS = 300  # 5分間進捗なしでスタック判定
-
-
-def _is_bg_stale() -> bool:
-    """バックグラウンド処理がスタックしているか判定"""
-    if _bg_state["status"] != "running":
-        return False
-    # スレッドが死んでいる
-    if _bg_thread is not None and not _bg_thread.is_alive():
-        return True
-    # スレッド参照がない（プロセス再起動後）
-    if _bg_thread is None:
-        return True
-    # 開始から5分以上経過して進捗0%のまま
-    started = _bg_state.get("started", "")
-    if started:
+    # キーワードのステータスを更新
+    for kw in kw_list:
         try:
-            st_time = datetime.fromisoformat(started)
-            elapsed = (_now_jst() - st_time).total_seconds()
-            if elapsed > _BG_STALE_SECONDS and _bg_state["progress"] == 0:
-                return True
-        except (ValueError, TypeError):
+            update_keyword_status(kw, "fetching")
+        except Exception:
             pass
-    return False
 
+    for si, source_name in enumerate(sources):
+        for ki, kw in enumerate(kw_list):
+            completed += 1
+            pct = int((completed / max(total_steps, 1)) * 100)
+            detail = f"📡 {source_name}: 「{kw}」({completed}/{total_steps}) — {len(all_jobs)}件取得済み"
 
-def _reset_bg_state():
-    """スタックしたバックグラウンド状態をリセット"""
-    global _bg_thread
-    _bg_state["status"] = "idle"
-    _bg_state["result"] = ""
-    _bg_state["progress"] = 0
-    _bg_state["progress_detail"] = ""
-    _bg_state["jobs_found"] = 0
-    _bg_state["current_source"] = ""
-    _bg_state["current_kw"] = ""
-    _bg_thread = None
+            if status_container:
+                status_container.update(label=f"求人取得中... {pct}%", state="running")
+                status_container.write(detail)
 
+            try:
+                jobs = fetch_from_all_sources([kw], location, enabled_sources=[source_name])
+                for job in jobs:
+                    url = job.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_jobs.append(job)
+            except Exception as e:
+                if status_container:
+                    status_container.write(f"⚠️ {source_name} エラー: {e}")
 
-def _get_bg_status():
-    global _bg_thread
-    with _BG_LOCK:
-        if _bg_state["status"] == "running" and _is_bg_stale():
-            _reset_bg_state()
-        return dict(_bg_state)
+    # DB保存
+    elapsed = _time.time() - start
+    if all_jobs:
+        saved = save_jobs(all_jobs)
+        add_collection_log(len(kw_list), len(all_jobs), saved, ",".join(sources), elapsed)
+        result_msg = f"✅ {saved}件を新規保存（{elapsed:.1f}秒・{len(all_jobs)}件中）"
+    else:
+        add_collection_log(len(kw_list), 0, 0, ",".join(sources), elapsed)
+        result_msg = "⚠️ 取得0件でした（データ管理タブの取得ログを確認してください）"
 
+    # キーワードごとのDB件数を更新
+    for kw in kw_list:
+        try:
+            update_keyword_status(kw, "done")
+        except Exception:
+            pass
 
-def start_bg_fetch(kw_list, location, sources):
-    global _bg_thread
-    with _BG_LOCK:
-        if _bg_state["status"] == "running":
-            if _is_bg_stale():
-                _reset_bg_state()
-            else:
-                return False
-        _bg_state["status"] = "running"
-        _bg_state["progress"] = 0
-        _bg_state["started"] = _now_jst().isoformat()
-    t = threading.Thread(target=_bg_fetch_worker, args=(kw_list, location, sources), daemon=True)
-    t.start()
-    _bg_thread = t
-    return True
+    if status_container:
+        if all_jobs:
+            status_container.update(label=result_msg, state="complete")
+        else:
+            status_container.update(label=result_msg, state="error")
+
+    return {"saved": saved if all_jobs else 0, "total": len(all_jobs), "elapsed": elapsed, "result": result_msg}
 
 
 # ============================================================
@@ -417,72 +323,7 @@ web_count = jt_stats.get("web", 0)
 st.sidebar.caption(f"👤 候補者: {len(saved_cands)}名")
 st.sidebar.caption(f"📌 契約中求人: {contracted_count}件 / 🌐 Web掲載: {web_count}件")
 
-# バックグラウンド取得ステータス（全ページ共通）
-_bg = _get_bg_status()
-if _bg["status"] == "running":
-    # 全ページで2秒ごとに自動更新（進捗をリアルタイム表示）
-    st_autorefresh(interval=2000, limit=500, key="global_bg_refresh")
-    st.sidebar.markdown("---")
-    pct = _bg["progress"]
-    _found = _bg.get("jobs_found", 0)
-    _src = esc(_bg.get("current_source", ""))
-    _kw = esc(_bg.get("current_kw", ""))
-    _detail = esc(_bg.get("progress_detail", ""))
-    # 経過時間・残り時間推定
-    _elapsed_str = ""
-    _remaining_str = ""
-    try:
-        _started = datetime.fromisoformat(_bg["started"])
-        _elapsed_sec = (_now_jst() - _started).total_seconds()
-        _elapsed_str = f"{int(_elapsed_sec)}秒" if _elapsed_sec < 60 else f"{int(_elapsed_sec // 60)}分{int(_elapsed_sec % 60)}秒"
-        if pct > 5:
-            _total_est = _elapsed_sec / (pct / 100)
-            _remain_sec = max(0, _total_est - _elapsed_sec)
-            if _remain_sec < 60:
-                _remaining_str = f"約{int(_remain_sec)}秒"
-            else:
-                _remaining_str = f"約{int(_remain_sec // 60)}分{int(_remain_sec % 60)}秒"
-    except (ValueError, TypeError):
-        pass
-    if _remaining_str:
-        _remain_html = f'<div style="text-align:center;color:#667eea;font-weight:bold;font-size:0.85em;margin-top:4px;">⏳ 残り {_remaining_str}</div>'
-    else:
-        _remain_html = '<div style="text-align:center;color:#999;font-size:0.82em;margin-top:4px;">⏳ 残り時間を計算中...</div>'
-    st.sidebar.markdown(
-        f"""<div style="padding:12px;border-radius:10px;background:linear-gradient(135deg,#667eea15,#764ba215);border:1px solid #667eea44;">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-            <div style="width:12px;height:12px;border-radius:50%;background:#667eea;animation:pulse 1.5s infinite;"></div>
-            <strong style="color:#667eea;font-size:0.95em;">求人データ取得中</strong>
-        </div>
-        <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>
-        {_remain_html}
-        <div style="margin-top:8px;font-size:0.82em;">
-            <div style="color:#444;">📡 {_src}: 「{_kw}」</div>
-            <div style="display:flex;justify-content:space-between;margin-top:4px;color:#666;">
-                <span>📋 {_found}件（重複除外済み）</span>
-                <span>⏱️ {_elapsed_str}</span>
-            </div>
-            <div style="color:#999;margin-top:4px;font-size:0.9em;">{_detail}</div>
-        </div>
-        <div style="font-size:0.75em;color:#aaa;margin-top:6px;text-align:center;">他のタブで作業を続けられます</div>
-        </div>
-        <style>@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}</style>""",
-        unsafe_allow_html=True
-    )
-elif _bg["status"] == "done":
-    st.sidebar.markdown("---")
-    st.sidebar.success(_bg["result"])
-    if st.sidebar.button("確認", key="bg_dismiss"):
-        with _BG_LOCK:
-            _bg_state["status"] = "idle"
-        st.rerun()
-elif _bg["status"] == "error":
-    st.sidebar.markdown("---")
-    st.sidebar.error(_bg["result"])
-    if st.sidebar.button("確認", key="bg_dismiss_err"):
-        with _BG_LOCK:
-            _bg_state["status"] = "idle"
-        st.rerun()
+# （同期取得のため、サイドバー進捗表示は不要）
 
 
 # ============================================================
@@ -1585,16 +1426,15 @@ elif page == "data_import":
     # --- Web求人取得 ---
     with dm_tabs[0]:
         st.markdown("### Web求人の自動取得")
-        st.caption("求人サイトからキーワード検索で自動取得。バックグラウンドで実行されます。")
+        st.caption("求人サイトからキーワード検索で自動取得します。")
 
         # --- fetchingのまま放置されたキーワードをリセット ---
-        if _get_bg_status()["status"] != "running":
-            _stale_kws = [k for k in get_keywords() if k.get("fetch_status") == "fetching"]
-            for _sk in _stale_kws:
-                try:
-                    update_keyword_status(_sk["keyword"], "pending")
-                except Exception:
-                    pass
+        _stale_kws = [k for k in get_keywords() if k.get("fetch_status") == "fetching"]
+        for _sk in _stale_kws:
+            try:
+                update_keyword_status(_sk["keyword"], "pending")
+            except Exception:
+                pass
 
         # --- 半日自動更新チェック ---
         _AUTO_REFRESH_HOURS = 12
@@ -1610,13 +1450,7 @@ elif page == "data_import":
             _hours_since = _AUTO_REFRESH_HOURS + 1
 
         _auto_kws = get_enabled_keywords()
-        if _hours_since >= _AUTO_REFRESH_HOURS and _auto_kws and _get_bg_status()["status"] != "running":
-            _auto_kw_list = [kw["keyword"] for kw in _auto_kws]
-            _auto_sources = list(SOURCE_NAMES)
-            if start_bg_fetch(_auto_kw_list, "", _auto_sources):
-                set_app_setting("last_auto_fetch_at", _now_ts.isoformat())
-                st.toast("🔄 半日ごとの自動更新を開始しました")
-                st.rerun()
+        _auto_refresh_needed = _hours_since >= _AUTO_REFRESH_HOURS and _auto_kws
 
         st.markdown("**取得ソース:**")
         enabled_sources = []
@@ -1727,10 +1561,10 @@ elif page == "data_import":
                             _loc_val = "" if new_kw_loc == "全国" else new_kw_loc
                             if add_keyword(new_kw.strip(), _loc_val):
                                 st.success(f"「{new_kw}」を追加")
-                                if _auto_start and _get_bg_status()["status"] != "running":
-                                    start_bg_fetch([new_kw.strip()], _loc_val, list(SOURCE_NAMES))
+                                if _auto_start:
+                                    with st.status("求人取得中...", expanded=True) as _sc:
+                                        run_fetch_sync([new_kw.strip()], _loc_val, list(SOURCE_NAMES), status_container=_sc)
                                     set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
-                                    st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
 
                 st.markdown("---")
@@ -1764,10 +1598,10 @@ elif page == "data_import":
                                         _added += 1
                                         _added_kws.append(r)
                                 st.success(f"{_added}件のキーワードを追加しました")
-                                if _auto_start_preset and _added_kws and _get_bg_status()["status"] != "running":
-                                    start_bg_fetch(_added_kws, "", list(SOURCE_NAMES))
+                                if _auto_start_preset and _added_kws:
+                                    with st.status("求人取得中...", expanded=True) as _sc:
+                                        run_fetch_sync(_added_kws, "", list(SOURCE_NAMES), status_container=_sc)
                                     set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
-                                    st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
                     else:
                         st.info(f"{_preset_domain} の職種はすべて登録済みです")
@@ -1853,10 +1687,10 @@ elif page == "data_import":
                                     if add_keyword(skw, ""):
                                         _added_sug_kws.append(skw)
                                 st.success(f"{len(_added_sug_kws)}件のキーワードを追加しました")
-                                if _auto_start_sug and _added_sug_kws and _get_bg_status()["status"] != "running":
-                                    start_bg_fetch(_added_sug_kws, "", list(SOURCE_NAMES))
+                                if _auto_start_sug and _added_sug_kws:
+                                    with st.status("求人取得中...", expanded=True) as _sc:
+                                        run_fetch_sync(_added_sug_kws, "", list(SOURCE_NAMES), status_container=_sc)
                                     set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
-                                    st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
                     else:
                         st.info("追加可能なキーワード候補はありません（全て登録済み）")
@@ -1868,54 +1702,12 @@ elif page == "data_import":
             st.caption("💡 キーワードを削除すると、そのキーワードに関連する求人データも削除されます。")
             all_kws = get_keywords()
 
-            # 取得中なら進捗パネルをキーワード一覧の上に表示
-            _kw_bg = _get_bg_status()
-            if _kw_bg["status"] == "running":
-                _kw_pct = _kw_bg["progress"]
-                _kw_found = _kw_bg.get("jobs_found", 0)
-                _kw_cur_src = esc(_kw_bg.get("current_source", ""))
-                _kw_cur_kw = esc(_kw_bg.get("current_kw", ""))
-                _kw_remain_txt = ""
-                try:
-                    _kw_st = datetime.fromisoformat(_kw_bg["started"])
-                    _kw_el = (_now_jst() - _kw_st).total_seconds()
-                    if _kw_pct > 3:
-                        _kw_rem = max(0, _kw_el / (_kw_pct / 100) - _kw_el)
-                        if _kw_rem < 60:
-                            _kw_remain_txt = f"残り約{int(_kw_rem)}秒"
-                        else:
-                            _kw_remain_txt = f"残り約{int(_kw_rem // 60)}分{int(_kw_rem % 60)}秒"
-                except (ValueError, TypeError):
-                    pass
-                _kw_remain_disp = _kw_remain_txt if _kw_remain_txt else "残り時間を計算中..."
-                st.markdown(
-                    f"""<div style="padding:12px 16px;border-radius:10px;background:linear-gradient(135deg,#667eea10,#764ba210);border:1px solid #667eea33;margin-bottom:12px;">
-                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-                        <div style="width:14px;height:14px;border:3px solid #667eea44;border-top:3px solid #667eea;border-radius:50%;animation:spin 1s linear infinite;"></div>
-                        <strong style="color:#667eea;">求人取得中 — {_kw_pct}%完了</strong>
-                        <span style="margin-left:auto;color:#888;font-size:0.85em;">⏳ {_kw_remain_disp}</span>
-                    </div>
-                    <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{_kw_pct}%">{_kw_pct}%</div></div>
-                    <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:0.82em;color:#666;">
-                        <span>📡 {_kw_cur_src}: 「{_kw_cur_kw}」</span>
-                        <span>📋 {_kw_found}件取得済み</span>
-                    </div>
-                    </div>
-                    <style>@keyframes spin{{from{{transform:rotate(0deg)}}to{{transform:rotate(360deg)}}}}</style>""",
-                    unsafe_allow_html=True
-                )
-
             if all_kws:
                 # ステータス集計
                 _kw_active = sum(1 for k in all_kws if k.get("enabled"))
                 _kw_done = sum(1 for k in all_kws if k.get("fetch_status") == "done")
                 _kw_pending = sum(1 for k in all_kws if k.get("fetch_status") in ("pending", "", None))
-                _kw_fetching = sum(1 for k in all_kws if k.get("fetch_status") == "fetching")
-                st.caption(f"合計 {len(all_kws)}件 ｜ 自動取得ON: {_kw_active} ｜ 取得済み: {_kw_done} ｜ 取得中: {_kw_fetching} ｜ 未取得: {_kw_pending}")
-
-            # 現在取得中のキーワード名を取得（バッジ表示用）
-            _running_kw_name = _kw_bg.get("current_kw", "") if _kw_bg["status"] == "running" else ""
-            _running_pct = _kw_bg.get("progress", 0) if _kw_bg["status"] == "running" else 0
+                st.caption(f"合計 {len(all_kws)}件 ｜ 自動取得ON: {_kw_active} ｜ 取得済み: {_kw_done} ｜ 未取得: {_kw_pending}")
 
             for kw in all_kws:
                 _fs = kw.get("fetch_status", "pending") or "pending"
@@ -1925,9 +1717,7 @@ elif page == "data_import":
                 _enabled = kw.get("enabled", 1)
 
                 # ステータスバッジ
-                if _fs == "fetching" and kw["keyword"] == _running_kw_name:
-                    _badge = f'<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:10px;font-size:0.75em;">🔄 取得中 {_running_pct}%</span>'
-                elif _fs == "fetching":
+                if _fs == "fetching":
                     _badge = '<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:10px;font-size:0.75em;">🔄 取得待ち</span>'
                 elif _fs == "done":
                     _lf_short = _lf[:16].replace("T", " ") if _lf else ""
@@ -1955,14 +1745,11 @@ elif page == "data_import":
                     unsafe_allow_html=True
                 )
                 # 今すぐ取得ボタン
-                _is_running = _get_bg_status()["status"] == "running"
-                if _fs == "fetching" or _is_running:
-                    kc2.button("取得中...", key=f"dm_now_kw_{kw['id']}", disabled=True)
-                else:
-                    if kc2.button("▶ 取得", key=f"dm_now_kw_{kw['id']}", help="このキーワードの求人を今すぐ取得"):
-                        start_bg_fetch([kw["keyword"]], kw.get("location", ""), list(SOURCE_NAMES))
-                        set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
-                        st.rerun()
+                if kc2.button("▶ 取得", key=f"dm_now_kw_{kw['id']}", help="このキーワードの求人を今すぐ取得"):
+                    with st.status(f"「{kw['keyword']}」の求人を取得中...", expanded=True) as _sc:
+                        run_fetch_sync([kw["keyword"]], kw.get("location", ""), list(SOURCE_NAMES), status_container=_sc)
+                    set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
+                    st.rerun()
                 # 自動取得ON/OFF
                 if _enabled:
                     if kc3.button("自動OFF", key=f"dm_tog_kw_{kw['id']}", help="自動取得の対象外にする"):
@@ -1989,87 +1776,27 @@ elif page == "data_import":
             except (ValueError, TypeError):
                 pass
 
-        bg = _get_bg_status()
-        if bg["status"] == "running":
-            pct = bg["progress"]
-            _dm_found = bg.get("jobs_found", 0)
-            _dm_src = esc(bg.get("current_source", ""))
-            _dm_kw = esc(bg.get("current_kw", ""))
-            _dm_detail = esc(bg.get("progress_detail", ""))
-            _dm_elapsed_str = ""
-            _dm_remain_str = ""
-            try:
-                _dm_started = datetime.fromisoformat(bg["started"])
-                _dm_elapsed = (_now_jst() - _dm_started).total_seconds()
-                _dm_elapsed_str = f"{int(_dm_elapsed)}秒" if _dm_elapsed < 60 else f"{int(_dm_elapsed // 60)}分{int(_dm_elapsed % 60)}秒"
-                if pct > 5:
-                    _dm_total_est = _dm_elapsed / (pct / 100)
-                    _dm_remain = max(0, _dm_total_est - _dm_elapsed)
-                    if _dm_remain < 60:
-                        _dm_remain_str = f"約{int(_dm_remain)}秒"
-                    else:
-                        _dm_remain_str = f"約{int(_dm_remain // 60)}分{int(_dm_remain % 60)}秒"
-            except (ValueError, TypeError):
-                pass
-            if _dm_remain_str:
-                _dm_remain_html = f"""<div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
-                        <div style="color:#999;font-size:0.8em;">残り時間（推定）</div>
-                        <div style="color:#667eea;font-weight:bold;font-size:1.2em;">⏳ {_dm_remain_str}</div>
-                    </div>"""
+        # メイン取得ボタン
+        if st.button("🔄 Web求人を自動取得", type="primary", use_container_width=True, key="dm_fetch"):
+            kw_list = [kw["keyword"] for kw in registered_kws]
+            if not kw_list:
+                st.error("キーワードを登録してください")
+            elif not enabled_sources:
+                st.error("ソースを1つ以上選択してください")
             else:
-                _dm_remain_html = """<div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
-                        <div style="color:#999;font-size:0.8em;">残り時間（推定）</div>
-                        <div style="color:#999;font-size:1.0em;">⏳ 計算中...</div>
-                    </div>"""
-            st.markdown(
-                f"""<div style="padding:16px;border-radius:10px;background:linear-gradient(135deg,#667eea0d,#764ba20d);border:1px solid #667eea33;">
-                <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
-                    <div style="width:16px;height:16px;border:3px solid #667eea44;border-top:3px solid #667eea;border-radius:50%;animation:spin 1s linear infinite;"></div>
-                    <strong style="font-size:1.05em;">求人データを取得中...</strong>
-                    <span style="margin-left:auto;color:#667eea;font-weight:bold;font-size:1.1em;">{pct}%</span>
-                </div>
-                <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px;font-size:0.88em;">
-                    <div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
-                        <div style="color:#999;font-size:0.8em;">取得件数（重複除外）</div>
-                        <div style="color:#333;font-weight:bold;font-size:1.2em;">📋 {_dm_found}件</div>
-                    </div>
-                    <div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
-                        <div style="color:#999;font-size:0.8em;">経過時間</div>
-                        <div style="color:#333;font-weight:bold;font-size:1.2em;">⏱️ {_dm_elapsed_str}</div>
-                    </div>
-                    {_dm_remain_html}
-                </div>
-                <div style="margin-top:10px;padding:8px 10px;background:#f0f2ff;border-radius:6px;font-size:0.85em;color:#555;">
-                    📡 {_dm_src}: 「{_dm_kw}」 — {_dm_detail}
-                </div>
-                </div>
-                <style>@keyframes spin{{from{{transform:rotate(0deg)}}to{{transform:rotate(360deg)}}}}</style>""",
-                unsafe_allow_html=True
-            )
-        elif bg["status"] == "done":
-            st.success(bg["result"])
-            if st.button("OK", key="dm_bg_clear"):
-                with _BG_LOCK:
-                    _bg_state["status"] = "idle"
+                with st.status("求人取得中...", expanded=True) as _sc:
+                    run_fetch_sync(kw_list, fetch_loc, enabled_sources, status_container=_sc)
+                set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
                 st.rerun()
-        elif bg["status"] == "error":
-            st.error(bg["result"])
-            if st.button("OK", key="dm_bg_err_clear"):
-                with _BG_LOCK:
-                    _bg_state["status"] = "idle"
-                st.rerun()
-        else:
-            if st.button("🔄 Web求人を自動取得", type="primary", use_container_width=True, key="dm_fetch"):
-                kw_list = [kw["keyword"] for kw in registered_kws]
-                if not kw_list:
-                    st.error("キーワードを登録してください")
-                elif not enabled_sources:
-                    st.error("ソースを1つ以上選択してください")
-                else:
-                    if start_bg_fetch(kw_list, fetch_loc, enabled_sources):
-                        set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
-                        st.rerun()
+
+        # 半日自動更新（ページ読み込み時に自動実行）
+        if _auto_refresh_needed:
+            _auto_kw_list = [kw["keyword"] for kw in _auto_kws]
+            _auto_sources = list(SOURCE_NAMES)
+            with st.status("半日ごとの自動更新中...", expanded=True) as _sc:
+                run_fetch_sync(_auto_kw_list, "", _auto_sources, status_container=_sc)
+            set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
+            st.rerun()
 
         logs = get_collection_logs(5)
         if logs:
