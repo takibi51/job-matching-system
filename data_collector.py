@@ -253,34 +253,52 @@ def fetch_jooble(keyword: str, location: str = "", max_pages: int = 3) -> List[D
     jobs = []
     _log(f"Jooble API: keyword={keyword}, location={location}, key={api_key[:8]}...")
 
+    # 日本版エンドポイントを優先、失敗時に国際版にフォールバック
+    _jooble_endpoints = [
+        f"https://jp.jooble.org/api/{api_key}",
+        f"https://jooble.org/api/{api_key}",
+    ]
+
     for page in range(1, max_pages + 1):
         _rate_limit("jooble.org", 1.0)
         try:
-            url = f"https://jooble.org/api/{api_key}"
             payload = {
                 "keywords": keyword,
-                "location": location or "日本",
+                "location": location or "",
                 "page": page,
             }
-            _log(f"Jooble API: POST {url[:40]}... payload={payload}")
-            resp = requests.post(
-                url,
-                json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "Mozilla/5.0 (compatible; JobSearchBot/1.0)",
-                },
-                timeout=20,
-            )
-            _log(f"Jooble API: status={resp.status_code}, length={len(resp.text)}")
-            if resp.status_code != 200:
-                _log(f"Jooble API: page={page} → {resp.status_code}: {resp.text[:300]}")
+
+            data = None
+            for endpoint in _jooble_endpoints:
+                _log(f"Jooble API: POST {endpoint[:45]}... payload={payload}")
+                resp = requests.post(
+                    endpoint,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "Mozilla/5.0 (compatible; JobSearchBot/1.0)",
+                    },
+                    timeout=20,
+                )
+                _log(f"Jooble API: status={resp.status_code}, length={len(resp.text)}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    total_count = data.get("totalCount", 0)
+                    if total_count > 0:
+                        _log(f"Jooble API: {endpoint[:30]}... → totalCount={total_count}")
+                        # このエンドポイントが有効なので以降はこれだけ使う
+                        _jooble_endpoints = [endpoint]
+                        break
+                    else:
+                        _log(f"Jooble API: {endpoint[:30]}... → totalCount=0, 次のエンドポイントを試行")
+                else:
+                    _log(f"Jooble API: {endpoint[:30]}... → {resp.status_code}: {resp.text[:200]}")
+
+            if not data:
                 break
 
-            data = resp.json()
-            total_count = data.get("totalCount", "?")
             items = data.get("jobs", [])
-            _log(f"Jooble API: totalCount={total_count}, jobs={len(items)}")
+            _log(f"Jooble API: totalCount={data.get('totalCount', '?')}, jobs={len(items)}")
             if not items:
                 break
 

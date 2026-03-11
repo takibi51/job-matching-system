@@ -1501,28 +1501,34 @@ elif page == "data_import":
                 if st.button("🧪 API接続テスト", key="dm_api_test"):
                     with st.status("Jooble API接続テスト中...", expanded=True) as _tc:
                         import requests as _req
-                        try:
-                            _test_resp = _req.post(
-                                f"https://jooble.org/api/{_jooble_key}",
-                                json={"keywords": "エンジニア", "location": "日本", "page": 1},
-                                headers={"Content-Type": "application/json"},
-                                timeout=20,
-                            )
-                            _tc.write(f"ステータス: {_test_resp.status_code}")
-                            _tc.write(f"レスポンスサイズ: {len(_test_resp.text)}文字")
-                            if _test_resp.status_code == 200:
-                                _test_data = _test_resp.json()
-                                _tc.write(f"totalCount: {_test_data.get('totalCount', '?')}")
-                                _tc.write(f"jobs: {len(_test_data.get('jobs', []))}件")
-                                if _test_data.get("jobs"):
-                                    _tc.write(f"例: {_test_data['jobs'][0].get('title', '?')}")
-                                _tc.update(label="API接続成功", state="complete")
-                            else:
-                                _tc.write(f"レスポンス: {_test_resp.text[:500]}")
-                                _tc.update(label=f"API接続失敗 ({_test_resp.status_code})", state="error")
-                        except Exception as _e:
-                            _tc.write(f"エラー: {_e}")
-                            _tc.update(label="API接続エラー", state="error")
+                        _test_ok = False
+                        for _ep in [f"https://jp.jooble.org/api/{_jooble_key}",
+                                    f"https://jooble.org/api/{_jooble_key}"]:
+                            try:
+                                _tc.write(f"テスト: {_ep[:45]}...")
+                                _test_resp = _req.post(
+                                    _ep,
+                                    json={"keywords": "エンジニア", "location": "", "page": 1},
+                                    headers={"Content-Type": "application/json"},
+                                    timeout=20,
+                                )
+                                _tc.write(f"  ステータス: {_test_resp.status_code} / {len(_test_resp.text)}文字")
+                                if _test_resp.status_code == 200:
+                                    _test_data = _test_resp.json()
+                                    _tc.write(f"  totalCount: {_test_data.get('totalCount', '?')}")
+                                    _tc.write(f"  jobs: {len(_test_data.get('jobs', []))}件")
+                                    if _test_data.get("jobs"):
+                                        _tc.write(f"  例: {_test_data['jobs'][0].get('title', '?')}")
+                                        _test_ok = True
+                                        break
+                                else:
+                                    _tc.write(f"  レスポンス: {_test_resp.text[:300]}")
+                            except Exception as _e:
+                                _tc.write(f"  エラー: {_e}")
+                        if _test_ok:
+                            _tc.update(label="API接続成功 — 求人データ取得可能", state="complete")
+                        else:
+                            _tc.update(label="API接続失敗 — 求人データが取得できません", state="error")
 
         st.markdown("**取得ソース:**")
         enabled_sources = []
