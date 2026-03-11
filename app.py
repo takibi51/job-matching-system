@@ -70,17 +70,27 @@ check_session_timeout()
 # バックグラウンド取得（スレッドセーフ・進捗%対応）
 # ============================================================
 _BG_LOCK = threading.Lock()
-_bg_state = {"status": "idle", "result": "", "started": "", "progress": 0, "progress_detail": ""}
+_bg_state = {
+    "status": "idle", "result": "", "started": "",
+    "progress": 0, "progress_detail": "",
+    "jobs_found": 0, "current_source": "", "current_kw": "",
+    "total_kws": 0, "completed_kws": 0,
+}
 
 
 def _bg_fetch_worker(kw_list, location, sources):
-    """別スレッドで求人取得を実行（進捗%を更新）"""
+    """別スレッドで求人取得を実行（進捗%・件数をリアルタイム更新）"""
     try:
         with _BG_LOCK:
             _bg_state["status"] = "running"
             _bg_state["started"] = datetime.now().isoformat()
             _bg_state["progress"] = 0
             _bg_state["progress_detail"] = "準備中..."
+            _bg_state["jobs_found"] = 0
+            _bg_state["total_kws"] = len(kw_list)
+            _bg_state["completed_kws"] = 0
+            _bg_state["current_source"] = ""
+            _bg_state["current_kw"] = ""
 
         start = _time.time()
         total_steps = len(kw_list) * len(sources)
@@ -92,14 +102,24 @@ def _bg_fetch_worker(kw_list, location, sources):
                 with _BG_LOCK:
                     pct = int((completed / max(total_steps, 1)) * 100)
                     _bg_state["progress"] = pct
-                    _bg_state["progress_detail"] = f"{source_name}: 「{kw}」取得中... ({pct}%)"
+                    _bg_state["current_source"] = source_name
+                    _bg_state["current_kw"] = kw
+                    elapsed_so_far = _time.time() - start
+                    _bg_state["progress_detail"] = (
+                        f"{source_name}: 「{kw}」取得中... "
+                        f"({completed + 1}/{total_steps})"
+                    )
 
                 try:
                     jobs = fetch_from_all_sources([kw], location, enabled_sources=[source_name])
                     all_jobs.extend(jobs)
+                    with _BG_LOCK:
+                        _bg_state["jobs_found"] = len(all_jobs)
                 except Exception:
                     pass
                 completed += 1
+                with _BG_LOCK:
+                    _bg_state["completed_kws"] = min(ki + 1, len(kw_list)) if si == len(sources) - 1 else ki
 
         elapsed = _time.time() - start
         with _BG_LOCK:
@@ -107,11 +127,12 @@ def _bg_fetch_worker(kw_list, location, sources):
             if all_jobs:
                 saved = save_jobs(all_jobs)
                 add_collection_log(len(kw_list), len(all_jobs), saved, ",".join(sources), elapsed)
-                _bg_state["result"] = f"✅ {len(all_jobs)}件取得 → {saved}件保存（{elapsed:.1f}秒）"
+                _bg_state["result"] = f"✅ {len(all_jobs)}件取得 → {saved}件新規保存（{elapsed:.1f}秒）"
             else:
                 add_collection_log(len(kw_list), 0, 0, ",".join(sources), elapsed)
                 _bg_state["result"] = "⚠️ 取得0件でした"
             _bg_state["progress_detail"] = "完了"
+            _bg_state["jobs_found"] = len(all_jobs)
             _bg_state["status"] = "done"
     except Exception as e:
         with _BG_LOCK:
@@ -312,15 +333,33 @@ if _bg["status"] == "running":
     st_autorefresh(interval=2000, limit=500, key="global_bg_refresh")
     st.sidebar.markdown("---")
     pct = _bg["progress"]
+    _found = _bg.get("jobs_found", 0)
+    _src = esc(_bg.get("current_source", ""))
+    _kw = esc(_bg.get("current_kw", ""))
+    _detail = esc(_bg.get("progress_detail", ""))
+    # 経過時間
+    try:
+        _started = datetime.fromisoformat(_bg["started"])
+        _elapsed_sec = (datetime.now() - _started).total_seconds()
+        _elapsed_str = f"{int(_elapsed_sec)}秒" if _elapsed_sec < 60 else f"{int(_elapsed_sec // 60)}分{int(_elapsed_sec % 60)}秒"
+    except (ValueError, TypeError):
+        _elapsed_str = ""
     st.sidebar.markdown(
-        f"""<div style="padding:10px;border-radius:8px;background:linear-gradient(135deg,#667eea22,#764ba222);border:1px solid #667eea44;">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        f"""<div style="padding:12px;border-radius:10px;background:linear-gradient(135deg,#667eea15,#764ba215);border:1px solid #667eea44;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
             <div style="width:12px;height:12px;border-radius:50%;background:#667eea;animation:pulse 1.5s infinite;"></div>
-            <strong style="color:#667eea;">データ取得中</strong>
+            <strong style="color:#667eea;font-size:0.95em;">求人データ取得中</strong>
         </div>
         <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>
-        <div style="font-size:0.8em;color:#666;margin-top:4px;">{esc(_bg["progress_detail"])}</div>
-        <div style="font-size:0.75em;color:#999;margin-top:2px;">他のタブで作業を続けられます</div>
+        <div style="margin-top:8px;font-size:0.82em;">
+            <div style="color:#444;">📡 {_src}: 「{_kw}」</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;color:#666;">
+                <span>📋 {_found}件取得済み</span>
+                <span>⏱️ {_elapsed_str}</span>
+            </div>
+            <div style="color:#999;margin-top:4px;font-size:0.9em;">{_detail}</div>
+        </div>
+        <div style="font-size:0.75em;color:#aaa;margin-top:6px;text-align:center;">他のタブで作業を続けられます</div>
         </div>
         <style>@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}</style>""",
         unsafe_allow_html=True
@@ -1740,14 +1779,37 @@ elif page == "data_import":
         bg = _get_bg_status()
         if bg["status"] == "running":
             pct = bg["progress"]
+            _dm_found = bg.get("jobs_found", 0)
+            _dm_src = esc(bg.get("current_source", ""))
+            _dm_kw = esc(bg.get("current_kw", ""))
+            _dm_detail = esc(bg.get("progress_detail", ""))
+            try:
+                _dm_started = datetime.fromisoformat(bg["started"])
+                _dm_elapsed = (datetime.now() - _dm_started).total_seconds()
+                _dm_elapsed_str = f"{int(_dm_elapsed)}秒" if _dm_elapsed < 60 else f"{int(_dm_elapsed // 60)}分{int(_dm_elapsed % 60)}秒"
+            except (ValueError, TypeError):
+                _dm_elapsed_str = ""
             st.markdown(
-                f"""<div style="padding:12px;border-radius:8px;background:linear-gradient(135deg,#667eea11,#764ba211);border:1px solid #667eea33;">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-                    <div style="width:14px;height:14px;border:3px solid #667eea44;border-top:3px solid #667eea;border-radius:50%;animation:spin 1s linear infinite;"></div>
-                    <strong>求人データを取得中...</strong>
+                f"""<div style="padding:16px;border-radius:10px;background:linear-gradient(135deg,#667eea0d,#764ba20d);border:1px solid #667eea33;">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+                    <div style="width:16px;height:16px;border:3px solid #667eea44;border-top:3px solid #667eea;border-radius:50%;animation:spin 1s linear infinite;"></div>
+                    <strong style="font-size:1.05em;">求人データを取得中...</strong>
+                    <span style="margin-left:auto;color:#667eea;font-weight:bold;font-size:1.1em;">{pct}%</span>
                 </div>
                 <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>
-                <div style="font-size:0.85em;color:#555;margin-top:6px;">{esc(bg["progress_detail"])}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;font-size:0.88em;">
+                    <div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
+                        <div style="color:#999;font-size:0.8em;">取得済み件数</div>
+                        <div style="color:#333;font-weight:bold;font-size:1.2em;">📋 {_dm_found}件</div>
+                    </div>
+                    <div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
+                        <div style="color:#999;font-size:0.8em;">経過時間</div>
+                        <div style="color:#333;font-weight:bold;font-size:1.2em;">⏱️ {_dm_elapsed_str}</div>
+                    </div>
+                </div>
+                <div style="margin-top:10px;padding:8px 10px;background:#f0f2ff;border-radius:6px;font-size:0.85em;color:#555;">
+                    📡 {_dm_src}: 「{_dm_kw}」 — {_dm_detail}
+                </div>
                 </div>
                 <style>@keyframes spin{{from{{transform:rotate(0deg)}}to{{transform:rotate(360deg)}}}}</style>""",
                 unsafe_allow_html=True
