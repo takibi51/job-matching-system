@@ -1507,7 +1507,7 @@ elif page == "data_import":
                         _sorted_suggests = sorted(_suggest_kws.items(), key=lambda x: len(x[1]), reverse=True)
                         _selected_sugs = []
                         for sug_kw, cand_names in _sorted_suggests[:20]:
-                            if st.checkbox(f"{sug_kw}（{', '.join(set(cand_names)[:2])}）", key=f"dm_sug_{sug_kw}"):
+                            if st.checkbox(f"{sug_kw}（{', '.join(list(set(cand_names))[:2])}）", key=f"dm_sug_{sug_kw}"):
                                 _selected_sugs.append(sug_kw)
                         if _selected_sugs and st.button("選択したキーワードを登録", type="primary", key="dm_sug_add"):
                             for skw in _selected_sugs:
