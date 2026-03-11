@@ -242,20 +242,23 @@ def set_jooble_api_key(key: str):
     _JOOBLE_API_KEY = key
 
 
+_JP_CHAR_RE = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
+
+
+def _has_japanese(text: str) -> bool:
+    """テキストに日本語文字が含まれるか"""
+    return bool(_JP_CHAR_RE.search(text))
+
+
 def _is_japanese_job(job: Dict) -> bool:
-    """求人が日本関連かを判定（日本語文字 or 日本の地名を含む）"""
-    text = f"{job.get('title', '')} {job.get('company', '')} {job.get('location', '')}"
-    # 日本語文字（ひらがな・カタカナ・漢字）を含む
-    if re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', text):
+    """求人が日本関連かを判定（タイトルに日本語必須）"""
+    title = job.get('title', '')
+    # タイトルに日本語文字が含まれていれば確実に日本の求人
+    if _has_japanese(title):
         return True
-    # 日本関連の英語キーワード
-    _japan_terms = [
-        'japan', 'tokyo', 'osaka', 'kyoto', 'nagoya', 'fukuoka',
-        'yokohama', 'sapporo', 'kobe', 'sendai', 'hiroshima',
-        'chiba', 'saitama', 'kanagawa',
-    ]
-    text_lower = text.lower()
-    return any(t in text_lower for t in _japan_terms)
+    # タイトルが英語のみの場合 → 企業名やlocationに日本語があってもスキップ
+    # （英語タイトルの求人は表示に不適切なため）
+    return False
 
 
 def _jooble_api_search(api_key: str, keyword: str, location: str, max_pages: int) -> List[Dict]:
@@ -316,9 +319,10 @@ def fetch_jooble(keyword: str, location: str = "", max_pages: int = 10) -> List[
     all_jobs = []
 
     # ---- Phase 1: location="Japan" で日本限定検索 ----
-    japan_jobs = _jooble_api_search(api_key, keyword, location or "Japan", max_pages)
+    japan_jobs_raw = _jooble_api_search(api_key, keyword, location or "Japan", max_pages)
+    japan_jobs = [j for j in japan_jobs_raw if _has_japanese(j.get("title", ""))]
+    _log(f"Jooble Phase1 (Japan): {len(japan_jobs_raw)}件 → 日本語タイトル: {len(japan_jobs)}件")
     all_jobs.extend(japan_jobs)
-    _log(f"Jooble Phase1 (Japan): {len(japan_jobs)}件")
 
     # ---- Phase 2: ロケーションなしで広範囲検索 + 日本フィルター ----
     if len(japan_jobs) < 30:

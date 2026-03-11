@@ -12,6 +12,7 @@ import os
 import html
 import re
 import time as _time
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 JST = timezone(timedelta(hours=9))
@@ -197,6 +198,30 @@ def run_fetch_sync(kw_list, location, sources, status_container=None):
 # ============================================================
 def esc(text):
     return html.escape(str(text)) if text else ""
+
+
+# 日本語サイトのドメイン（翻訳不要）
+_JP_DOMAINS = [
+    "mynavi.jp", "doda.jp", "en-japan.com", "type.jp", "rikunabi",
+    "green-japan.com", "wantedly.com", "xn--pckua2a7gp15o89zb",
+    "careerjet.jp", "hellowork", "en-gage.net", "indeed.co.jp",
+    "jp.indeed.com", "r-agent.com", "job-medley.com", "bizreach.jp",
+]
+
+
+def _job_url(url: str) -> str:
+    """求人URLを返す。英語サイトの場合はGoogle翻訳経由にする"""
+    if not url:
+        return ""
+    url_lower = url.lower()
+    # 日本語サイトはそのまま
+    if any(d in url_lower for d in _JP_DOMAINS):
+        return url
+    # 日本語文字がURLに含まれていればそのまま
+    if re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', url):
+        return url
+    # 英語サイト → Google翻訳経由
+    return f"https://translate.google.com/translate?sl=en&tl=ja&u={urllib.parse.quote(url, safe='')}"
 
 
 def _get_label_thresholds():
@@ -538,7 +563,7 @@ def _render_ai_search_results(tab_key):
             bc1, bc2 = st.columns(2)
             if bc1.button("📄 詳細", key=f"ai_job_{tab_key}_{i}"):
                 show_job_popup(job, get_saved_candidates())
-            url = job.get("url", "")
+            url = _job_url(job.get("url", ""))
             if safe_url(url):
                 bc2.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
 
@@ -845,7 +870,7 @@ def show_job_popup(job, candidates=None):
         st.markdown(f"📍 {job.get('location', '不明')}")
         st.markdown(f"💰 {job.get('salary', '情報なし')}")
     with j2:
-        url = job.get("url", "")
+        url = _job_url(job.get("url", ""))
         if safe_url(url):
             st.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページを開く</a>', unsafe_allow_html=True)
         st.caption(f"ソース: {job.get('source', '')} / 更新: {job.get('updated_at', '')[:16]}")
@@ -1039,7 +1064,7 @@ if page == "candidate_search":
                                 save_proposal(active_cand["id"], job.get("url", ""), "提案済み", "")
                                 st.success("提案を登録しました")
                                 st.rerun()
-                        url = job.get("url", "")
+                        url = _job_url(job.get("url", ""))
                         if safe_url(url):
                             qa3.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
 
@@ -1049,7 +1074,7 @@ if page == "candidate_search":
                             "種別": "契約中" if j.get("job_type") == "contracted" else "Web",
                             "求人タイトル": j.get("title", ""), "企業名": j.get("company", ""),
                             "勤務地": j.get("location", ""), "年収": j.get("salary", ""),
-                            "ソース": j.get("source", ""), "URL": j.get("url", ""),
+                            "ソース": j.get("source", ""), "URL": _job_url(j.get("url", "")),
                         } for i, j in enumerate(filtered, 1)])
                         st.dataframe(df, hide_index=True, use_container_width=True)
                         csv_buf = io.StringIO()
@@ -1135,7 +1160,7 @@ elif page == "job_search":
                 jqa1, jqa2 = st.columns(2)
                 if jqa1.button("📄 詳細 & マッチ候補者", key=f"js_jpop_{i}"):
                     show_job_popup(job, saved_cands)
-                url = job.get("url", "")
+                url = _job_url(job.get("url", ""))
                 if safe_url(url):
                     jqa2.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
 
