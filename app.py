@@ -181,19 +181,35 @@ def _bg_fetch_worker(kw_list, location, sources):
             _bg_state["result"] = f"❌ エラー: {e}"
 
 
+_bg_thread = None  # バックグラウンドスレッド参照
+
+
 def _get_bg_status():
+    global _bg_thread
     with _BG_LOCK:
+        # スレッドが死んでいるのにrunning状態のままの場合を検出・修復
+        if _bg_state["status"] == "running" and _bg_thread is not None and not _bg_thread.is_alive():
+            _bg_state["status"] = "error"
+            _bg_state["result"] = "⚠️ 取得処理が予期せず停止しました。再度取得してください。"
+            _bg_thread = None
         return dict(_bg_state)
 
 
 def start_bg_fetch(kw_list, location, sources):
+    global _bg_thread
     with _BG_LOCK:
         if _bg_state["status"] == "running":
-            return False
+            # スレッドが死んでいたらリセット
+            if _bg_thread is not None and not _bg_thread.is_alive():
+                _bg_state["status"] = "idle"
+                _bg_thread = None
+            else:
+                return False
         _bg_state["status"] = "running"
         _bg_state["progress"] = 0
     t = threading.Thread(target=_bg_fetch_worker, args=(kw_list, location, sources), daemon=True)
     t.start()
+    _bg_thread = t
     return True
 
 
@@ -1537,6 +1553,15 @@ elif page == "data_import":
         st.markdown("### Web求人の自動取得")
         st.caption("求人サイトからキーワード検索で自動取得。バックグラウンドで実行されます。")
 
+        # --- fetchingのまま放置されたキーワードをリセット ---
+        if _get_bg_status()["status"] != "running":
+            _stale_kws = [k for k in get_keywords() if k.get("fetch_status") == "fetching"]
+            for _sk in _stale_kws:
+                try:
+                    update_keyword_status(_sk["keyword"], "pending")
+                except Exception:
+                    pass
+
         # --- 半日自動更新チェック ---
         _AUTO_REFRESH_HOURS = 12
         _last_auto = get_app_setting("last_auto_fetch_at")
@@ -1806,6 +1831,7 @@ elif page == "data_import":
 
             st.markdown("---")
             st.markdown("**登録済みキーワード一覧**")
+            st.caption("💡 キーワードを削除しても取得済みの求人データは保持されます。データ削除は「データ管理」タブから行えます。")
             all_kws = get_keywords()
 
             # 取得中なら進捗パネルをキーワード一覧の上に表示
