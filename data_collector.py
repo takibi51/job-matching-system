@@ -1,9 +1,8 @@
 """
-求人データ自動収集モジュール（v2）
-- CareerJet（メインソース: ページネーション対応）
-- Indeed Japan（最大ソース: 日本最大の求人アグリゲーター）
-- 求人ボックス（BeautifulSoupパース + ページネーション）
-- スタンバイ（Yahoo系求人エンジン）
+求人データ自動収集モジュール（v3）
+- CareerJet（メインソース: スクレイピング + ページネーション）
+- Jooble API（公開REST API — 安定・高品質）
+- 求人ボックス（スクレイピング + ページネーション）
 - リクルートエージェント（Next.jsデータ）
 - CSV/テキスト手動インポート
 - 各サイト検索URL生成
@@ -17,9 +16,26 @@ import io
 import time
 import random
 import json
-import html as html_mod
+import logging
 from typing import List, Dict, Optional, Callable
 from datetime import datetime
+
+# エラーログ（バックグラウンド取得の問題特定用）
+_fetch_log: List[str] = []
+
+
+def get_fetch_log() -> List[str]:
+    """直近の取得ログを返す"""
+    return list(_fetch_log[-100:])
+
+
+def _log(msg: str):
+    ts = datetime.now().strftime("%H:%M:%S")
+    entry = f"[{ts}] {msg}"
+    _fetch_log.append(entry)
+    if len(_fetch_log) > 200:
+        _fetch_log.pop(0)
+
 
 try:
     from bs4 import BeautifulSoup
@@ -72,35 +88,42 @@ def _rate_limit(domain: str, min_interval: float = 1.5):
 def _safe_get(url: str, params: dict = None, timeout: int = 15,
               headers: dict = None, max_retries: int = 3,
               return_soup: bool = False):
-    """リトライ・バックオフ付きHTTP GET"""
+    """リトライ・バックオフ付きHTTP GET（詳細ログ付き）"""
     for attempt in range(max_retries):
         try:
             h = headers or _get_headers()
             resp = requests.get(url, params=params, headers=h,
                                 timeout=timeout, allow_redirects=True)
             if resp.status_code == 200:
+                _log(f"GET {url} → 200 OK ({len(resp.text)}文字)")
                 if return_soup and _HAS_BS4:
                     return BeautifulSoup(resp.text, "html.parser")
                 return resp.text
             elif resp.status_code in (403, 429, 503):
+                _log(f"GET {url} → {resp.status_code} (リトライ {attempt+1}/{max_retries})")
                 wait = (2 ** attempt) + random.uniform(0.5, 1.5)
                 time.sleep(wait)
                 continue
             else:
+                _log(f"GET {url} → {resp.status_code} (スキップ)")
                 return None
-        except requests.RequestException:
+        except requests.RequestException as e:
+            _log(f"GET {url} → 例外: {e} (リトライ {attempt+1}/{max_retries})")
             if attempt < max_retries - 1:
                 time.sleep(random.uniform(1.0, 2.0))
+    _log(f"GET {url} → 全リトライ失敗")
     return None
 
 
 # ============================================================
-# 1. CareerJet（メインソース — ページネーション対応）
+# 1. CareerJet（メインソース — スクレイピング）
 # ============================================================
 
 def fetch_careerjet(keyword: str, location: str = "", max_pages: int = 3) -> List[Dict]:
     """CareerJetから求人取得（ソート別×ページネーション）"""
     jobs = []
+    _log(f"CareerJet: keyword={keyword}, location={location}, max_pages={max_pages}")
+
     for sort in ["relevance", "date", "salary"]:
         for page in range(1, max_pages + 1):
             _rate_limit("www.careerjet.jp", 1.5)
@@ -115,6 +138,7 @@ def fetch_careerjet(keyword: str, location: str = "", max_pages: int = 3) -> Lis
                     break
                 articles = soup.select("article")
                 if not articles:
+                    _log(f"CareerJet: sort={sort}, page={page} → article要素0件")
                     break
                 for art in articles:
                     job = _parse_careerjet_article_bs(art, location)
@@ -135,7 +159,9 @@ def fetch_careerjet(keyword: str, location: str = "", max_pages: int = 3) -> Lis
                     if job:
                         jobs.append(job)
 
-    return _deduplicate(jobs)
+    result = _deduplicate(jobs)
+    _log(f"CareerJet: {len(result)}件取得完了")
+    return result
 
 
 def _parse_careerjet_article_bs(article, default_location: str = "") -> Optional[Dict]:
@@ -197,117 +223,150 @@ def _parse_careerjet_article_re(art_html: str, default_location: str = "") -> Op
 
 
 # ============================================================
-# 2. Indeed Japan（最大ソース — ページネーション対応）
+# 2. Jooble API（公開REST API — 認証不要でもテスト可能）
 # ============================================================
 
-def fetch_indeed(keyword: str, location: str = "", max_pages: int = 3) -> List[Dict]:
-    """Indeed Japanから求人取得"""
+# Jooble APIキー（設定から取得、未設定でもデフォルトで動作テスト）
+_JOOBLE_API_KEY = ""
+
+
+def set_jooble_api_key(key: str):
+    global _JOOBLE_API_KEY
+    _JOOBLE_API_KEY = key
+
+
+def fetch_jooble(keyword: str, location: str = "", max_pages: int = 3) -> List[Dict]:
+    """Jooble APIから求人取得（公開REST API）"""
+    api_key = _JOOBLE_API_KEY
+    if not api_key:
+        # APIキー未設定の場合はスクレイピングフォールバック
+        return _fetch_jooble_scrape(keyword, location, max_pages)
+
+    jobs = []
+    _log(f"Jooble API: keyword={keyword}, location={location}")
+
+    for page in range(1, max_pages + 1):
+        _rate_limit("jooble.org", 1.0)
+        try:
+            resp = requests.post(
+                f"https://jooble.org/api/{api_key}",
+                json={
+                    "keywords": keyword,
+                    "location": location or "日本",
+                    "page": page,
+                },
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                _log(f"Jooble API: page={page} → {resp.status_code}")
+                break
+
+            data = resp.json()
+            items = data.get("jobs", [])
+            if not items:
+                break
+
+            for item in items:
+                title = item.get("title", "").strip()
+                link = item.get("link", "").strip()
+                if not title or not link:
+                    continue
+                jobs.append({
+                    "title": title[:100],
+                    "company": item.get("company", ""),
+                    "location": item.get("location", ""),
+                    "salary": item.get("salary", ""),
+                    "url": link,
+                    "description": item.get("snippet", "")[:2000],
+                    "source": "Jooble",
+                    "pub_date": item.get("updated", ""),
+                })
+            _log(f"Jooble API: page={page} → {len(items)}件")
+        except Exception as e:
+            _log(f"Jooble API: page={page} → エラー: {e}")
+            break
+
+    result = _deduplicate(jobs)
+    _log(f"Jooble API: {len(result)}件取得完了")
+    return result
+
+
+def _fetch_jooble_scrape(keyword: str, location: str = "", max_pages: int = 3) -> List[Dict]:
+    """Joobleからスクレイピングで求人取得（APIキー未設定時のフォールバック）"""
     if not _HAS_BS4:
         return []
     jobs = []
-    for page in range(max_pages):
-        _rate_limit("jp.indeed.com", 2.0)
+    _log(f"Jooble(scrape): keyword={keyword}")
+    query = f"{keyword} {location}".strip() if location else keyword
+
+    for page in range(1, max_pages + 1):
+        _rate_limit("jp.jooble.org", 1.5)
         soup = _safe_get(
-            "https://jp.indeed.com/jobs",
-            params={"q": keyword, "l": location, "start": page * 10, "fromage": "30"},
-            return_soup=True, timeout=20,
+            "https://jp.jooble.org/SearchResult",
+            params={"ukw": query, "p": page},
+            return_soup=True,
+            timeout=20,
         )
         if not soup:
             break
 
+        # 求人カードを複数セレクタで検索
         cards = (
-            soup.select('div.job_seen_beacon')
-            or soup.select('div[class*="jobsearch-ResultsList"] div[class*="result"]')
-            or soup.select('td.resultContent')
-            or soup.select('div[data-jk]')
-            or soup.find_all('div', {'class': re.compile(r'job_seen_beacon|cardOutline|result')})
+            soup.select('article[class*="vacancy"]')
+            or soup.select('div[class*="vacancy-card"]')
+            or soup.select('div[data-test="serp-item"]')
+            or soup.select('a[class*="vacancy"]')
         )
         if not cards:
-            mosaic = soup.find('div', id='mosaic-provider-jobcards')
-            if mosaic:
-                cards = mosaic.find_all('div', recursive=False)
-        if not cards:
+            _log(f"Jooble(scrape): page={page} → カード0件")
             break
 
         for card in cards:
-            job = _parse_indeed_card(card, location)
-            if job:
+            job = {}
+            title_el = card.select_one('h2, h3, [class*="header"], [class*="title"]')
+            if title_el:
+                job["title"] = title_el.get_text(strip=True)[:100]
+
+            link = card if card.name == "a" else card.select_one('a[href]')
+            if link and link.get("href"):
+                href = link["href"]
+                job["url"] = ("https://jp.jooble.org" + href) if href.startswith("/") else href
+
+            comp_el = card.select_one('[class*="company"]')
+            job["company"] = comp_el.get_text(strip=True) if comp_el else ""
+
+            loc_el = card.select_one('[class*="location"], [class*="geo"]')
+            job["location"] = loc_el.get_text(strip=True) if loc_el else ""
+
+            sal_el = card.select_one('[class*="salary"]')
+            job["salary"] = sal_el.get_text(strip=True) if sal_el else ""
+
+            desc_el = card.select_one('[class*="snippet"], [class*="desc"]')
+            job["description"] = desc_el.get_text(strip=True)[:500] if desc_el else ""
+
+            job["source"] = "Jooble"
+            job["pub_date"] = ""
+
+            if job.get("title") and job.get("url"):
                 jobs.append(job)
 
-    return _deduplicate(jobs)
+        _log(f"Jooble(scrape): page={page} → {len(cards)}カード")
 
-
-def _parse_indeed_card(card, default_location: str = "") -> Optional[Dict]:
-    """Indeedの求人カードをパース"""
-    job = {}
-
-    for sel in ['h2.jobTitle a span', 'h2.jobTitle span[title]', 'h2.jobTitle a',
-                'a[data-jk] span', 'a.jcs-JobTitle span', 'a.jcs-JobTitle', '.jobTitle']:
-        el = card.select_one(sel)
-        if el and el.get_text(strip=True):
-            job["title"] = el.get_text(strip=True)
-            break
-    if not job.get("title"):
-        return None
-
-    for sel in ['h2.jobTitle a', 'a[data-jk]', 'a.jcs-JobTitle', 'a[href*="/rc/clk"]', 'a[href*="/viewjob"]']:
-        el = card.select_one(sel)
-        if el and el.get("href"):
-            href = el["href"]
-            job["url"] = ("https://jp.indeed.com" + href) if href.startswith("/") else href
-            break
-    if "url" not in job:
-        jk = card.get("data-jk")
-        if not jk:
-            jk_el = card.find(attrs={"data-jk": True})
-            if jk_el:
-                jk = jk_el.get("data-jk")
-        if jk:
-            job["url"] = f"https://jp.indeed.com/viewjob?jk={jk}"
-    if "url" not in job:
-        return None
-
-    for sel in ['[data-testid="company-name"]', '.companyName', 'span.company']:
-        el = card.select_one(sel)
-        if el and el.get_text(strip=True):
-            job["company"] = el.get_text(strip=True)
-            break
-    job.setdefault("company", "")
-
-    for sel in ['[data-testid="text-location"]', '.companyLocation', 'div.location']:
-        el = card.select_one(sel)
-        if el and el.get_text(strip=True):
-            job["location"] = el.get_text(strip=True)
-            break
-    job.setdefault("location", default_location)
-
-    for sel in ['.salary-snippet-container', '.salaryText', '[class*="salary"]']:
-        el = card.select_one(sel)
-        if el and el.get_text(strip=True):
-            job["salary"] = el.get_text(strip=True)
-            break
-    job.setdefault("salary", "")
-
-    for sel in ['.job-snippet', '[class*="job-snippet"]', '.underShelfFooter']:
-        el = card.select_one(sel)
-        if el and el.get_text(strip=True):
-            job["description"] = el.get_text(strip=True)[:500]
-            break
-    job.setdefault("description", "")
-
-    job["source"] = "Indeed"
-    job["pub_date"] = ""
-    return job
+    result = _deduplicate(jobs)
+    _log(f"Jooble(scrape): {len(result)}件取得完了")
+    return result
 
 
 # ============================================================
-# 3. 求人ボックス（BeautifulSoup + ページネーション）
+# 3. 求人ボックス（スクレイピング + ページネーション）
 # ============================================================
 
 def fetch_kyujinbox(keyword: str, location: str = "", max_pages: int = 3) -> List[Dict]:
     """求人ボックスから求人取得"""
     jobs = []
     query = f"{keyword} {location}".strip() if location else keyword
+    _log(f"求人ボックス: query={query}")
 
     for page in range(1, max_pages + 1):
         _rate_limit("xn--pckua2a7gp15o89zb.com", 1.5)
@@ -340,15 +399,19 @@ def fetch_kyujinbox(keyword: str, location: str = "", max_pages: int = 3) -> Lis
                             "salary": "", "url": url, "description": "",
                             "source": "求人ボックス", "pub_date": "",
                         })
+                if links:
+                    _log(f"求人ボックス: page={page} → {len(links)}リンク(フォールバック)")
                 continue
 
             if not cards:
+                _log(f"求人ボックス: page={page} → カード0件")
                 break
 
             for card in cards:
                 job = _parse_kyujinbox_card_bs(card, location)
                 if job:
                     jobs.append(job)
+            _log(f"求人ボックス: page={page} → {len(cards)}カード")
         else:
             text = _safe_get(
                 "https://xn--pckua2a7gp15o89zb.com/",
@@ -370,7 +433,9 @@ def fetch_kyujinbox(keyword: str, location: str = "", max_pages: int = 3) -> Lis
                     "source": "求人ボックス", "pub_date": "",
                 })
 
-    return _deduplicate(jobs)
+    result = _deduplicate(jobs)
+    _log(f"求人ボックス: {len(result)}件取得完了")
+    return result
 
 
 def _parse_kyujinbox_card_bs(card, default_location: str = "") -> Optional[Dict]:
@@ -420,72 +485,13 @@ def _parse_kyujinbox_card_bs(card, default_location: str = "") -> Optional[Dict]
 
 
 # ============================================================
-# 4. スタンバイ（Yahoo系求人エンジン）
-# ============================================================
-
-def fetch_standby(keyword: str, location: str = "", max_pages: int = 3) -> List[Dict]:
-    """スタンバイから求人取得"""
-    if not _HAS_BS4:
-        return []
-    jobs = []
-    query = f"{keyword} {location}".strip() if location else keyword
-
-    for page in range(1, max_pages + 1):
-        _rate_limit("jp.stanby.com", 1.5)
-        soup = _safe_get(
-            "https://jp.stanby.com/jobs",
-            params={"q": query, "page": page},
-            return_soup=True,
-        )
-        if not soup:
-            break
-
-        cards = (
-            soup.select('div[class*="JobCard"]')
-            or soup.select('article[class*="job"]')
-            or soup.select('a[href*="/jobs/"]')
-            or soup.find_all('article')
-        )
-        if not cards:
-            break
-
-        for card in cards:
-            job = {}
-            title_el = card.select_one('h2, h3, [class*="title"]')
-            if title_el:
-                job["title"] = title_el.get_text(strip=True)[:100]
-
-            link = card if card.name == "a" else card.select_one('a[href]')
-            if link and link.get("href"):
-                href = link["href"]
-                job["url"] = ("https://jp.stanby.com" + href) if href.startswith("/") else href
-
-            company_el = card.select_one('[class*="company"]')
-            job["company"] = company_el.get_text(strip=True) if company_el else ""
-
-            loc_el = card.select_one('[class*="location"], [class*="area"]')
-            job["location"] = loc_el.get_text(strip=True) if loc_el else ""
-
-            salary_el = card.select_one('[class*="salary"]')
-            job["salary"] = salary_el.get_text(strip=True) if salary_el else ""
-
-            job["description"] = ""
-            job["source"] = "スタンバイ"
-            job["pub_date"] = ""
-
-            if job.get("title") and job.get("url"):
-                jobs.append(job)
-
-    return _deduplicate(jobs)
-
-
-# ============================================================
-# 5. リクルートエージェント（Next.js __NEXT_DATA__）
+# 4. リクルートエージェント（Next.js __NEXT_DATA__）
 # ============================================================
 
 def fetch_recruit_agent(keyword: str, location: str = "", max_pages: int = 2) -> List[Dict]:
     """リクルートエージェントから求人取得"""
     jobs = []
+    _log(f"リクルートエージェント: keyword={keyword}")
 
     for page in range(1, max_pages + 1):
         _rate_limit("www.r-agent.com", 2.0)
@@ -499,13 +505,14 @@ def fetch_recruit_agent(keyword: str, location: str = "", max_pages: int = 2) ->
 
         nd_m = re.search(r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', text, re.DOTALL)
         if not nd_m:
+            _log(f"リクルートエージェント: page={page} → __NEXT_DATA__なし")
             break
 
         try:
             nd = json.loads(nd_m.group(1))
             page_props = nd.get("props", {}).get("pageProps", {}).get("data", {})
 
-            # 複数キーから求人データを探索
+            found_any = False
             for key in ["recommendedJobs", "searchResult", "jobs", "jobList"]:
                 items = page_props.get(key, [])
                 if isinstance(items, dict):
@@ -516,10 +523,15 @@ def fetch_recruit_agent(keyword: str, location: str = "", max_pages: int = 2) ->
                     job = _parse_recruit_item(item, location)
                     if job:
                         jobs.append(job)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            pass
+                        found_any = True
+            if not found_any:
+                _log(f"リクルートエージェント: page={page} → 求人データキーなし (keys: {list(page_props.keys())[:5]})")
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            _log(f"リクルートエージェント: page={page} → パースエラー: {e}")
 
-    return _deduplicate(jobs)
+    result = _deduplicate(jobs)
+    _log(f"リクルートエージェント: {len(result)}件取得完了")
+    return result
 
 
 def _parse_recruit_item(item: dict, default_location: str = "") -> Optional[Dict]:
@@ -546,9 +558,8 @@ def _parse_recruit_item(item: dict, default_location: str = "") -> Optional[Dict
 
 SOURCES = {
     "CareerJet": {"func": fetch_careerjet, "enabled": True},
-    "Indeed": {"func": fetch_indeed, "enabled": True},
+    "Jooble": {"func": fetch_jooble, "enabled": True},
     "求人ボックス": {"func": fetch_kyujinbox, "enabled": True},
-    "スタンバイ": {"func": fetch_standby, "enabled": True},
     "リクルートエージェント": {"func": fetch_recruit_agent, "enabled": True},
 }
 
@@ -567,6 +578,8 @@ def fetch_from_all_sources(keywords: List[str], location: str = "",
     total_steps = len(keywords[:15]) * len(enabled_sources)
     step = 0
 
+    _log(f"=== 全ソース取得開始: keywords={keywords[:5]}, sources={enabled_sources} ===")
+
     for kw in keywords[:15]:
         for source_name in enabled_sources:
             step += 1
@@ -583,12 +596,15 @@ def fetch_from_all_sources(keywords: List[str], location: str = "",
                     progress_callback(f"  → {len(jobs)}件取得")
                 all_jobs.extend(jobs)
             except Exception as e:
+                _log(f"ソース {source_name} エラー: {e}")
                 if progress_callback:
                     progress_callback(f"  → エラー: {e}")
 
             time.sleep(random.uniform(0.3, 0.8))
 
-    return _deduplicate(all_jobs)
+    result = _deduplicate(all_jobs)
+    _log(f"=== 全ソース取得完了: {len(result)}件（重複除外後） ===")
+    return result
 
 
 # ============================================================

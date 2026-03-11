@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data_collector import (
     fetch_from_all_sources, parse_csv_upload, parse_text_input,
-    generate_search_urls, SOURCE_NAMES,
+    generate_search_urls, SOURCE_NAMES, get_fetch_log,
 )
 from scorer import rank_jobs, generate_search_queries, score_job
 from candidate_loader import (
@@ -150,8 +150,9 @@ def _bg_fetch_worker(kw_list, location, sources):
                             all_jobs.append(job)
                     with _BG_LOCK:
                         _bg_state["jobs_found"] = len(all_jobs)
-                except Exception:
-                    pass
+                except Exception as _fetch_err:
+                    import traceback
+                    traceback.print_exc()  # Streamlit Cloudログに出力
                 completed += 1
 
         # DB保存 → 実際の新規保存件数を取得
@@ -164,7 +165,7 @@ def _bg_fetch_worker(kw_list, location, sources):
                 _bg_state["result"] = f"✅ {saved}件を新規保存（{elapsed:.1f}秒・{len(all_jobs)}件中）"
             else:
                 add_collection_log(len(kw_list), 0, 0, ",".join(sources), elapsed)
-                _bg_state["result"] = "⚠️ 取得0件でした"
+                _bg_state["result"] = "⚠️ 取得0件でした（取得ログを確認してください）"
             _bg_state["progress_detail"] = "完了"
             _bg_state["jobs_found"] = saved if all_jobs else 0
             _bg_state["status"] = "done"
@@ -2330,6 +2331,13 @@ elif page == "data_import":
                 else:
                     st.session_state["confirm_clear"] = True
                     st.warning("もう一度クリックで実行")
+
+        with st.expander("📋 取得ログ（デバッグ用）"):
+            _fl = get_fetch_log()
+            if _fl:
+                st.code("\n".join(_fl[-50:]), language="text")
+            else:
+                st.caption("取得ログはまだありません")
 
         with st.expander("⚙️ 設定"):
             st.markdown("**スコア重み**")
