@@ -125,6 +125,9 @@ def _safe_get(url: str, params: dict = None, timeout: int = 15,
 
 def fetch_careerjet(keyword: str, location: str = "", max_pages: int = 3) -> List[Dict]:
     """CareerJetから求人取得（ソート別×ページネーション）"""
+    if _IS_CLOUD:
+        _log("CareerJet: クラウド環境のためスキップ（スクレイピング不可）")
+        return []
     jobs = []
     _log(f"CareerJet: keyword={keyword}, location={location}, max_pages={max_pages}")
 
@@ -276,7 +279,7 @@ def fetch_jooble(keyword: str, location: str = "", max_pages: int = 3) -> List[D
                     json=payload,
                     headers={
                         "Content-Type": "application/json",
-                        "User-Agent": "Mozilla/5.0 (compatible; JobSearchBot/1.0)",
+                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                     },
                     timeout=20,
                 )
@@ -399,6 +402,9 @@ def _fetch_jooble_scrape(keyword: str, location: str = "", max_pages: int = 3) -
 
 def fetch_kyujinbox(keyword: str, location: str = "", max_pages: int = 3) -> List[Dict]:
     """求人ボックスから求人取得"""
+    if _IS_CLOUD:
+        _log("求人ボックス: クラウド環境のためスキップ（スクレイピング不可）")
+        return []
     jobs = []
     query = f"{keyword} {location}".strip() if location else keyword
     _log(f"求人ボックス: query={query}")
@@ -525,6 +531,9 @@ def _parse_kyujinbox_card_bs(card, default_location: str = "") -> Optional[Dict]
 
 def fetch_recruit_agent(keyword: str, location: str = "", max_pages: int = 2) -> List[Dict]:
     """リクルートエージェントから求人取得"""
+    if _IS_CLOUD:
+        _log("リクルートエージェント: クラウド環境のためスキップ（スクレイピング不可）")
+        return []
     jobs = []
     _log(f"リクルートエージェント: keyword={keyword}")
 
