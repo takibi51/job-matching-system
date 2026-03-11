@@ -1301,7 +1301,7 @@ if page == "candidate_search":
             salary_max = ac2.number_input("最高年収(万)", value=conditions.get("salary_max", 600), step=10, key="cs_smax")
             age_val = ac3.number_input("年齢", value=max(conditions.get("age", 30), 18), min_value=18, max_value=70, key="cs_age")
             _loc_default = conditions.get("location", "全国")
-            _loc_defaults = [_loc_default] if _loc_default and _loc_default != "全国" else []
+            _loc_defaults = [_loc_default] if _loc_default and _loc_default != "全国" and _loc_default in _LOCATION_OPTIONS else []
             loc_vals = st.multiselect("勤務地（複数選択可・OR条件）", _LOCATION_OPTIONS, default=_loc_defaults, key="cs_loc")
             kw_str = st.text_area("キーワード（改行区切り）",
                                   value="\n".join(conditions.get("keywords", [])), height=60, key="cs_kw")
