@@ -182,16 +182,50 @@ def _bg_fetch_worker(kw_list, location, sources):
 
 
 _bg_thread = None  # バックグラウンドスレッド参照
+_BG_STALE_SECONDS = 300  # 5分間進捗なしでスタック判定
+
+
+def _is_bg_stale() -> bool:
+    """バックグラウンド処理がスタックしているか判定"""
+    if _bg_state["status"] != "running":
+        return False
+    # スレッドが死んでいる
+    if _bg_thread is not None and not _bg_thread.is_alive():
+        return True
+    # スレッド参照がない（プロセス再起動後）
+    if _bg_thread is None:
+        return True
+    # 開始から5分以上経過して進捗0%のまま
+    started = _bg_state.get("started", "")
+    if started:
+        try:
+            st_time = datetime.fromisoformat(started)
+            elapsed = (_now_jst() - st_time).total_seconds()
+            if elapsed > _BG_STALE_SECONDS and _bg_state["progress"] == 0:
+                return True
+        except (ValueError, TypeError):
+            pass
+    return False
+
+
+def _reset_bg_state():
+    """スタックしたバックグラウンド状態をリセット"""
+    global _bg_thread
+    _bg_state["status"] = "idle"
+    _bg_state["result"] = ""
+    _bg_state["progress"] = 0
+    _bg_state["progress_detail"] = ""
+    _bg_state["jobs_found"] = 0
+    _bg_state["current_source"] = ""
+    _bg_state["current_kw"] = ""
+    _bg_thread = None
 
 
 def _get_bg_status():
     global _bg_thread
     with _BG_LOCK:
-        # スレッドが死んでいるのにrunning状態のままの場合を検出・修復
-        if _bg_state["status"] == "running" and _bg_thread is not None and not _bg_thread.is_alive():
-            _bg_state["status"] = "error"
-            _bg_state["result"] = "⚠️ 取得処理が予期せず停止しました。再度取得してください。"
-            _bg_thread = None
+        if _bg_state["status"] == "running" and _is_bg_stale():
+            _reset_bg_state()
         return dict(_bg_state)
 
 
@@ -199,14 +233,13 @@ def start_bg_fetch(kw_list, location, sources):
     global _bg_thread
     with _BG_LOCK:
         if _bg_state["status"] == "running":
-            # スレッドが死んでいたらリセット
-            if _bg_thread is not None and not _bg_thread.is_alive():
-                _bg_state["status"] = "idle"
-                _bg_thread = None
+            if _is_bg_stale():
+                _reset_bg_state()
             else:
                 return False
         _bg_state["status"] = "running"
         _bg_state["progress"] = 0
+        _bg_state["started"] = _now_jst().isoformat()
     t = threading.Thread(target=_bg_fetch_worker, args=(kw_list, location, sources), daemon=True)
     t.start()
     _bg_thread = t
@@ -1831,7 +1864,7 @@ elif page == "data_import":
 
             st.markdown("---")
             st.markdown("**登録済みキーワード一覧**")
-            st.caption("💡 キーワードを削除しても取得済みの求人データは保持されます。データ削除は「データ管理」タブから行えます。")
+            st.caption("💡 キーワードを削除すると、そのキーワードに関連する求人データも削除されます。")
             all_kws = get_keywords()
 
             # 取得中なら進捗パネルをキーワード一覧の上に表示

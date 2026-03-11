@@ -388,8 +388,18 @@ def add_keyword(keyword: str, location: str = "") -> bool:
     return True
 
 
-def remove_keyword(keyword_id: int):
+def remove_keyword(keyword_id: int, delete_jobs: bool = True):
+    """キーワードを削除。delete_jobs=Trueなら関連する求人データも削除"""
     conn = _get_conn()
+    if delete_jobs:
+        # キーワード名を取得してから関連求人を削除
+        row = conn.execute("SELECT keyword FROM collection_keywords WHERE id = ?", (keyword_id,)).fetchone()
+        if row:
+            kw = row["keyword"]
+            conn.execute(
+                "DELETE FROM jobs WHERE job_type = 'web' AND (title LIKE ? OR description LIKE ?)",
+                (f"%{kw}%", f"%{kw}%")
+            )
     conn.execute("DELETE FROM collection_keywords WHERE id = ?", (keyword_id,))
     conn.commit()
 
