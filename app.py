@@ -50,6 +50,22 @@ from ai_generator import (
 from auth import check_password, check_session_timeout, render_logout_button, safe_url
 
 # ============================================================
+# 勤務地プルダウン選択肢
+# ============================================================
+_LOCATION_OPTIONS = [
+    "全国", "リモート",
+    "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
+    "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
+    "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県",
+    "岐阜県", "静岡県", "愛知県", "三重県",
+    "滋賀県", "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県",
+    "鳥取県", "島根県", "岡山県", "広島県", "山口県",
+    "徳島県", "香川県", "愛媛県", "高知県",
+    "福岡県", "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
+    "海外",
+]
+
+# ============================================================
 # ページ設定
 # ============================================================
 st.set_page_config(
@@ -350,13 +366,26 @@ if _bg["status"] == "running":
     _src = esc(_bg.get("current_source", ""))
     _kw = esc(_bg.get("current_kw", ""))
     _detail = esc(_bg.get("progress_detail", ""))
-    # 経過時間
+    # 経過時間・残り時間推定
+    _elapsed_str = ""
+    _remaining_str = ""
     try:
         _started = datetime.fromisoformat(_bg["started"])
         _elapsed_sec = (datetime.now() - _started).total_seconds()
         _elapsed_str = f"{int(_elapsed_sec)}秒" if _elapsed_sec < 60 else f"{int(_elapsed_sec // 60)}分{int(_elapsed_sec % 60)}秒"
+        if pct > 5:
+            _total_est = _elapsed_sec / (pct / 100)
+            _remain_sec = max(0, _total_est - _elapsed_sec)
+            if _remain_sec < 60:
+                _remaining_str = f"約{int(_remain_sec)}秒"
+            else:
+                _remaining_str = f"約{int(_remain_sec // 60)}分{int(_remain_sec % 60)}秒"
     except (ValueError, TypeError):
-        _elapsed_str = ""
+        pass
+    if _remaining_str:
+        _remain_html = f'<div style="text-align:center;color:#667eea;font-weight:bold;font-size:0.85em;margin-top:4px;">⏳ 残り {_remaining_str}</div>'
+    else:
+        _remain_html = '<div style="text-align:center;color:#999;font-size:0.82em;margin-top:4px;">⏳ 残り時間を計算中...</div>'
     st.sidebar.markdown(
         f"""<div style="padding:12px;border-radius:10px;background:linear-gradient(135deg,#667eea15,#764ba215);border:1px solid #667eea44;">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
@@ -364,6 +393,7 @@ if _bg["status"] == "running":
             <strong style="color:#667eea;font-size:0.95em;">求人データ取得中</strong>
         </div>
         <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>
+        {_remain_html}
         <div style="margin-top:8px;font-size:0.82em;">
             <div style="color:#444;">📡 {_src}: 「{_kw}」</div>
             <div style="display:flex;justify-content:space-between;margin-top:4px;color:#666;">
@@ -984,7 +1014,9 @@ if page == "candidate_search":
             salary_min = ac1.number_input("最低年収(万)", value=conditions.get("salary_min", 300), step=10, key="cs_smin")
             salary_max = ac2.number_input("最高年収(万)", value=conditions.get("salary_max", 600), step=10, key="cs_smax")
             age_val = ac3.number_input("年齢", value=max(conditions.get("age", 30), 18), min_value=18, max_value=70, key="cs_age")
-            loc_val = ac4.text_input("勤務地", value=conditions.get("location", "大阪"), key="cs_loc")
+            _loc_default = conditions.get("location", "全国")
+            _loc_idx = _LOCATION_OPTIONS.index(_loc_default) if _loc_default in _LOCATION_OPTIONS else 0
+            loc_val = ac4.selectbox("勤務地", _LOCATION_OPTIONS, index=_loc_idx, key="cs_loc")
             kw_str = st.text_area("キーワード（改行区切り）",
                                   value="\n".join(conditions.get("keywords", [])), height=60, key="cs_kw")
             kws = [k.strip() for k in kw_str.split("\n") if k.strip()]
@@ -1617,14 +1649,15 @@ elif page == "data_import":
                 with st.form("dm_add_kw"):
                     kc1, kc2 = st.columns([3, 1])
                     new_kw = kc1.text_input("フリーワード", placeholder="例: Webデザイナー")
-                    new_kw_loc = kc2.text_input("勤務地（空欄=全国）", value="", key="dm_kw_loc")
+                    new_kw_loc = kc2.selectbox("勤務地", _LOCATION_OPTIONS, index=0, key="dm_kw_loc")
                     _auto_start = st.checkbox("登録と同時に求人取得を開始する", value=True, key="dm_auto_fetch_free")
                     if st.form_submit_button("追加"):
                         if new_kw.strip():
-                            if add_keyword(new_kw.strip(), new_kw_loc.strip()):
+                            _loc_val = "" if new_kw_loc == "全国" else new_kw_loc
+                            if add_keyword(new_kw.strip(), _loc_val):
                                 st.success(f"「{new_kw}」を追加")
                                 if _auto_start and _get_bg_status()["status"] != "running":
-                                    start_bg_fetch([new_kw.strip()], new_kw_loc.strip(), list(SOURCE_NAMES))
+                                    start_bg_fetch([new_kw.strip()], _loc_val, list(SOURCE_NAMES))
                                     set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
                                     st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
@@ -1827,7 +1860,8 @@ elif page == "data_import":
                     remove_keyword(kw["id"])
                     st.rerun()
 
-        fetch_loc = st.text_input("取得勤務地（空欄=全国）", value="", key="dm_fetch_loc", placeholder="例: 東京、大阪 など（空欄で全国）")
+        fetch_loc_sel = st.selectbox("取得勤務地", _LOCATION_OPTIONS, index=0, key="dm_fetch_loc")
+        fetch_loc = "" if fetch_loc_sel == "全国" else fetch_loc_sel
 
         # 自動更新状態の表示
         if _last_auto:
@@ -1846,12 +1880,31 @@ elif page == "data_import":
             _dm_src = esc(bg.get("current_source", ""))
             _dm_kw = esc(bg.get("current_kw", ""))
             _dm_detail = esc(bg.get("progress_detail", ""))
+            _dm_elapsed_str = ""
+            _dm_remain_str = ""
             try:
                 _dm_started = datetime.fromisoformat(bg["started"])
                 _dm_elapsed = (datetime.now() - _dm_started).total_seconds()
                 _dm_elapsed_str = f"{int(_dm_elapsed)}秒" if _dm_elapsed < 60 else f"{int(_dm_elapsed // 60)}分{int(_dm_elapsed % 60)}秒"
+                if pct > 5:
+                    _dm_total_est = _dm_elapsed / (pct / 100)
+                    _dm_remain = max(0, _dm_total_est - _dm_elapsed)
+                    if _dm_remain < 60:
+                        _dm_remain_str = f"約{int(_dm_remain)}秒"
+                    else:
+                        _dm_remain_str = f"約{int(_dm_remain // 60)}分{int(_dm_remain % 60)}秒"
             except (ValueError, TypeError):
-                _dm_elapsed_str = ""
+                pass
+            if _dm_remain_str:
+                _dm_remain_html = f"""<div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
+                        <div style="color:#999;font-size:0.8em;">残り時間（推定）</div>
+                        <div style="color:#667eea;font-weight:bold;font-size:1.2em;">⏳ {_dm_remain_str}</div>
+                    </div>"""
+            else:
+                _dm_remain_html = """<div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
+                        <div style="color:#999;font-size:0.8em;">残り時間（推定）</div>
+                        <div style="color:#999;font-size:1.0em;">⏳ 計算中...</div>
+                    </div>"""
             st.markdown(
                 f"""<div style="padding:16px;border-radius:10px;background:linear-gradient(135deg,#667eea0d,#764ba20d);border:1px solid #667eea33;">
                 <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
@@ -1860,7 +1913,7 @@ elif page == "data_import":
                     <span style="margin-left:auto;color:#667eea;font-weight:bold;font-size:1.1em;">{pct}%</span>
                 </div>
                 <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;font-size:0.88em;">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px;font-size:0.88em;">
                     <div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
                         <div style="color:#999;font-size:0.8em;">取得済み件数</div>
                         <div style="color:#333;font-weight:bold;font-size:1.2em;">📋 {_dm_found}件</div>
@@ -1869,6 +1922,7 @@ elif page == "data_import":
                         <div style="color:#999;font-size:0.8em;">経過時間</div>
                         <div style="color:#333;font-weight:bold;font-size:1.2em;">⏱️ {_dm_elapsed_str}</div>
                     </div>
+                    {_dm_remain_html}
                 </div>
                 <div style="margin-top:10px;padding:8px 10px;background:#f0f2ff;border-radius:6px;font-size:0.85em;color:#555;">
                     📡 {_dm_src}: 「{_dm_kw}」 — {_dm_detail}
