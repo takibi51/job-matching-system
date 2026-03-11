@@ -687,11 +687,143 @@ def _parse_recruit_item(item: dict, default_location: str = "") -> Optional[Dict
 
 
 # ============================================================
+# 6. Web検索（DuckDuckGo経由で主要求人サイトの情報を収集）
+# ============================================================
+
+# 検索結果から求人情報を抽出する対象サイト
+_JOB_SITE_DOMAINS = [
+    "indeed.com", "r-agent.com", "doda.jp", "mynavi.jp", "en-japan.com",
+    "type.jp", "rikunabi", "green-japan.com", "wantedly.com",
+    "xn--pckua2a7gp15o89zb", "careerjet.jp", "hellowork",
+    "en-gage.net", "bizreach.jp", "openwork.jp", "vorkers.com",
+    "job-medley.com", "jobtalk.jp", "levtech.jp",
+]
+
+
+def fetch_web_search(keyword: str, location: str = "", max_pages: int = 2) -> List[Dict]:
+    """DuckDuckGo検索で主要求人サイトからの情報を収集"""
+    if not _HAS_BS4:
+        _log("Web検索: BeautifulSoup未インストール")
+        return []
+    jobs = []
+    queries = [
+        f"{keyword} 求人 {location}".strip(),
+        f"{keyword} 転職 正社員 {location}".strip(),
+    ]
+    _log(f"Web検索: keyword={keyword}, location={location}")
+
+    seen_urls = set()
+    for qi, query in enumerate(queries):
+        for page in range(1, max_pages + 1):
+            _rate_limit("duckduckgo.com", 4.0)  # DuckDuckGoにはゆっくりアクセス
+            try:
+                params = {"q": query}
+                if page > 1:
+                    # DuckDuckGoのページネーションはoffset-based
+                    params["s"] = (page - 1) * 30
+                resp = requests.get(
+                    "https://html.duckduckgo.com/html/",
+                    params=params,
+                    headers={
+                        "User-Agent": _HEADERS_LIST[0]["User-Agent"],
+                        "Accept-Language": "ja-JP,ja;q=0.9",
+                    },
+                    timeout=20,
+                )
+                if resp.status_code == 202:
+                    # レート制限 → 待機してリトライ
+                    _log(f"Web検索: レート制限(202)、待機中...")
+                    time.sleep(5)
+                    continue
+                if resp.status_code != 200:
+                    _log(f"Web検索: status={resp.status_code}")
+                    break
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                results = soup.select(".result")
+                if not results:
+                    break
+
+                page_count = 0
+                for r in results:
+                    try:
+                        title_el = r.select_one(".result__title a, .result__a")
+                        snippet_el = r.select_one(".result__snippet")
+                        url_el = r.select_one(".result__url")
+                        if not title_el:
+                            continue
+
+                        title = title_el.get_text(strip=True)
+                        url_text = url_el.get_text(strip=True) if url_el else ""
+                        snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+
+                        # 求人サイトからの結果のみ抽出
+                        is_job_site = any(d in url_text.lower() for d in _JOB_SITE_DOMAINS)
+                        if not is_job_site:
+                            continue
+
+                        # 実際のURLを取得（DuckDuckGoのリダイレクトURLから抽出）
+                        href = title_el.get("href", "")
+                        actual_url = ""
+                        if "uddg=" in href:
+                            import urllib.parse as _up
+                            parsed = _up.parse_qs(_up.urlparse(href).query)
+                            actual_url = parsed.get("uddg", [""])[0]
+                        else:
+                            actual_url = href
+
+                        if not actual_url or actual_url in seen_urls:
+                            continue
+                        seen_urls.add(actual_url)
+
+                        # ソース名を判定
+                        source = "Web検索"
+                        for domain, name in [
+                            ("indeed.com", "Indeed"), ("doda.jp", "doda"),
+                            ("mynavi.jp", "マイナビ"), ("en-japan.com", "エン転職"),
+                            ("r-agent.com", "リクルートAG"), ("green-japan", "Green"),
+                            ("wantedly.com", "Wantedly"), ("type.jp", "type"),
+                            ("bizreach.jp", "ビズリーチ"), ("hellowork", "ハローワーク"),
+                            ("xn--pckua2a7gp15o89zb", "求人ボックス"),
+                            ("en-gage.net", "engage"),
+                        ]:
+                            if domain in url_text.lower():
+                                source = name
+                                break
+
+                        jobs.append({
+                            "title": title[:100],
+                            "company": "",
+                            "location": location,
+                            "salary": "",
+                            "url": actual_url,
+                            "description": snippet[:2000],
+                            "source": source,
+                            "pub_date": "",
+                        })
+                        page_count += 1
+                    except Exception:
+                        continue
+
+                _log(f"Web検索: q={qi+1}/{len(queries)}, p={page} → {page_count}件")
+                if page_count == 0:
+                    break
+            except Exception as e:
+                _log(f"Web検索: エラー: {e}")
+                break
+
+    result = _deduplicate(jobs)
+    _log(f"Web検索: {len(result)}件取得完了（{len(queries)}クエリ）")
+    return result
+
+
+# ============================================================
 # 統合: 全ソースから自動取得
 # ============================================================
 
 SOURCES = {
     "Jooble": {"func": fetch_jooble, "enabled": True},
+    "Web検索": {"func": fetch_web_search, "enabled": True},
     "CareerJet": {"func": fetch_careerjet_api, "enabled": True},
     "求人ボックス": {"func": fetch_kyujinbox, "enabled": True},
     "CareerJet(scrape)": {"func": fetch_careerjet, "enabled": not _IS_CLOUD},
@@ -699,7 +831,7 @@ SOURCES = {
 }
 
 if _IS_CLOUD:
-    _log("☁️ クラウド環境を検出: Jooble APIをメインソースとして使用します")
+    _log("☁️ クラウド環境を検出: Jooble API + Web検索 + CareerJet + 求人ボックスを使用")
 
 SOURCE_NAMES = list(SOURCES.keys())
 
