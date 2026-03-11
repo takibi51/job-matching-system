@@ -1564,12 +1564,17 @@ elif page == "data_import":
                 # フリーワード追加
                 with st.form("dm_add_kw"):
                     kc1, kc2 = st.columns([3, 1])
-                    new_kw = kc1.text_input("フリーワード", placeholder="例: Webデザイナー 大阪")
+                    new_kw = kc1.text_input("フリーワード", placeholder="例: Webデザイナー")
                     new_kw_loc = kc2.text_input("勤務地（空欄=全国）", value="", key="dm_kw_loc")
+                    _auto_start = st.checkbox("登録と同時に求人取得を開始する", value=True, key="dm_auto_fetch_free")
                     if st.form_submit_button("追加"):
                         if new_kw.strip():
                             if add_keyword(new_kw.strip(), new_kw_loc.strip()):
                                 st.success(f"「{new_kw}」を追加")
+                                if _auto_start and _get_bg_status()["status"] != "running":
+                                    start_bg_fetch([new_kw.strip()], new_kw_loc.strip(), list(SOURCE_NAMES))
+                                    set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
+                                    st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
 
                 st.markdown("---")
@@ -1594,12 +1599,19 @@ elif page == "data_import":
                         if _selected_roles:
                             st.caption(f"**追加予定（{len(_selected_roles)}件）:** " +
                                        ", ".join(f"「{r}」" for r in _selected_roles))
+                            _auto_start_preset = st.checkbox("登録と同時に求人取得を開始する", value=True, key="dm_auto_fetch_preset")
                             if st.button("選択した職種をキーワード登録", type="primary", key="dm_preset_add"):
                                 _added = 0
+                                _added_kws = []
                                 for r in _selected_roles:
                                     if add_keyword(r, ""):
                                         _added += 1
+                                        _added_kws.append(r)
                                 st.success(f"{_added}件のキーワードを追加しました")
+                                if _auto_start_preset and _added_kws and _get_bg_status()["status"] != "running":
+                                    start_bg_fetch(_added_kws, "", list(SOURCE_NAMES))
+                                    set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
+                                    st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
                     else:
                         st.info(f"{_preset_domain} の職種はすべて登録済みです")
@@ -1678,10 +1690,17 @@ elif page == "data_import":
                             st.markdown("---")
                             st.markdown(f"**追加されるキーワード（{len(_selected_sugs)}件）:** " +
                                         ", ".join(f"「{k}」" for k in _selected_sugs))
+                            _auto_start_sug = st.checkbox("登録と同時に求人取得を開始する", value=True, key="dm_auto_fetch_sug")
                             if st.button("選択したキーワードを登録", type="primary", key="dm_sug_add"):
+                                _added_sug_kws = []
                                 for skw in _selected_sugs:
-                                    add_keyword(skw, "")
-                                st.success(f"{len(_selected_sugs)}件のキーワードを追加しました")
+                                    if add_keyword(skw, ""):
+                                        _added_sug_kws.append(skw)
+                                st.success(f"{len(_added_sug_kws)}件のキーワードを追加しました")
+                                if _auto_start_sug and _added_sug_kws and _get_bg_status()["status"] != "running":
+                                    start_bg_fetch(_added_sug_kws, "", list(SOURCE_NAMES))
+                                    set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
+                                    st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
                     else:
                         st.info("追加可能なキーワード候補はありません（全て登録済み）")
