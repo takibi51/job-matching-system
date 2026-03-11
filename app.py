@@ -224,6 +224,179 @@ def _job_url(url: str) -> str:
     return f"https://translate.google.com/translate?sl=en&tl=ja&u={urllib.parse.quote(url, safe='')}"
 
 
+# 英語→日本語 タイトル変換テーブル（よくある求人タイトル用語）
+_EN_JA_TITLE = [
+    # 職種
+    ("Senior", "シニア"), ("Junior", "ジュニア"), ("Lead", "リード"), ("Chief", "チーフ"),
+    ("Principal", "プリンシパル"), ("Staff", "スタッフ"), ("Head of", "責任者 -"),
+    ("Manager", "マネージャー"), ("Director", "ディレクター"), ("Vice President", "副社長"),
+    ("Assistant", "アシスタント"), ("Associate", "アソシエイト"), ("Intern", "インターン"),
+    # エンジニア系
+    ("Software Engineer", "ソフトウェアエンジニア"), ("Frontend Engineer", "フロントエンドエンジニア"),
+    ("Backend Engineer", "バックエンドエンジニア"), ("Full Stack Engineer", "フルスタックエンジニア"),
+    ("Full-Stack Engineer", "フルスタックエンジニア"), ("Fullstack Engineer", "フルスタックエンジニア"),
+    ("Product Engineer", "プロダクトエンジニア"), ("Data Engineer", "データエンジニア"),
+    ("Machine Learning Engineer", "機械学習エンジニア"), ("ML Engineer", "MLエンジニア"),
+    ("DevOps Engineer", "DevOpsエンジニア"), ("Site Reliability Engineer", "SRE"),
+    ("QA Engineer", "QAエンジニア"), ("Security Engineer", "セキュリティエンジニア"),
+    ("Platform Engineer", "プラットフォームエンジニア"), ("Infrastructure Engineer", "インフラエンジニア"),
+    ("iOS Engineer", "iOSエンジニア"), ("Android Engineer", "Androidエンジニア"),
+    ("Mobile Engineer", "モバイルエンジニア"), ("Embedded Engineer", "組み込みエンジニア"),
+    ("Cloud Engineer", "クラウドエンジニア"),
+    ("Engineer", "エンジニア"),
+    # デザイン系
+    ("Product Designer", "プロダクトデザイナー"), ("UX Designer", "UXデザイナー"),
+    ("UI Designer", "UIデザイナー"), ("UX/UI Designer", "UX/UIデザイナー"),
+    ("Web Designer", "Webデザイナー"), ("Graphic Designer", "グラフィックデザイナー"),
+    ("Designer", "デザイナー"),
+    # PM/PO系
+    ("Product Manager", "プロダクトマネージャー"), ("Project Manager", "プロジェクトマネージャー"),
+    ("Engineering Manager", "エンジニアリングマネージャー"),
+    ("Product Owner", "プロダクトオーナー"), ("Program Manager", "プログラムマネージャー"),
+    # ビジネス系
+    ("Business Development", "事業開発"), ("Account Executive", "アカウントエグゼクティブ"),
+    ("Account Manager", "アカウントマネージャー"), ("Sales Manager", "セールスマネージャー"),
+    ("Sales Representative", "営業担当"), ("Sales Engineer", "セールスエンジニア"),
+    ("Customer Success", "カスタマーサクセス"), ("Customer Support", "カスタマーサポート"),
+    ("Marketing Manager", "マーケティングマネージャー"), ("Growth Manager", "グロースマネージャー"),
+    ("Content Manager", "コンテンツマネージャー"), ("Community Manager", "コミュニティマネージャー"),
+    ("Operations Manager", "オペレーションマネージャー"),
+    # データ系
+    ("Data Scientist", "データサイエンティスト"), ("Data Analyst", "データアナリスト"),
+    ("Business Analyst", "ビジネスアナリスト"), ("Research Scientist", "リサーチサイエンティスト"),
+    # HR・管理系
+    ("Human Resources", "人事"), ("Recruiter", "リクルーター"), ("Talent Acquisition", "採用"),
+    ("Office Manager", "オフィスマネージャー"), ("Executive Assistant", "エグゼクティブアシスタント"),
+    # その他
+    ("Consultant", "コンサルタント"), ("Specialist", "スペシャリスト"),
+    ("Coordinator", "コーディネーター"), ("Administrator", "アドミニストレーター"),
+    ("Architect", "アーキテクト"), ("Analyst", "アナリスト"), ("Developer", "デベロッパー"),
+    ("Technician", "テクニシャン"), ("Supervisor", "スーパーバイザー"),
+    ("Representative", "担当者"),
+    # 補助語
+    ("Remote", "リモート"), ("Part-time", "パートタイム"), ("Full-time", "フルタイム"),
+    ("Contract", "契約"), ("Temporary", "派遣"),
+]
+
+_JP_CHAR_RE_APP = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
+
+
+def _translate_title(title: str) -> str:
+    """英語タイトルを日本語に変換。既に日本語が含まれていればそのまま返す"""
+    if not title:
+        return title
+    if _JP_CHAR_RE_APP.search(title):
+        return title
+    result = title
+    for en, ja in _EN_JA_TITLE:
+        result = re.sub(re.escape(en), ja, result, flags=re.IGNORECASE)
+    return result
+
+
+def _build_matching_excel(candidate, conditions, ranked_jobs):
+    """営業用Excel（2シート）を生成して BytesIO を返す"""
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+
+    buf = io.BytesIO()
+    info = candidate.get("info", {}) if candidate else {}
+    tags = candidate.get("tags", {}) if candidate else {}
+    profile = generate_candidate_profile(candidate) if candidate else {}
+    cand_name = candidate.get("name", "候補者") if candidate else "候補者"
+
+    # --- Sheet1: 候補者プロフィール ---
+    hard_skills = info.get("hard_skills", profile.get("hard_skills", []))
+    soft_skills = info.get("soft_skills", profile.get("soft_skills", []))
+    career_summary = info.get("career_summary", profile.get("career_summary", ""))
+    market_score = info.get("market_score", profile.get("market_score", 0))
+    market_reasons = info.get("market_reasons", profile.get("market_reasons", []))
+    certifications = info.get("certifications", tags.get("certifications", []))
+    industries = info.get("industries", tags.get("industries", []))
+    languages = info.get("languages", tags.get("languages", []))
+    experience_level = info.get("experience_level", tags.get("experience_level", ""))
+    work_styles = info.get("work_styles", tags.get("work_styles", []))
+
+    kws = conditions.get("keywords", []) if conditions else []
+    sal_min = conditions.get("salary_min", "") if conditions else ""
+    sal_max = conditions.get("salary_max", "") if conditions else ""
+    loc = conditions.get("location", "") if conditions else ""
+
+    profile_rows = [
+        ("候補者名", cand_name),
+        ("キャリア概要", career_summary),
+        ("ハードスキル", "、".join(hard_skills) if isinstance(hard_skills, list) else str(hard_skills)),
+        ("ソフトスキル", "、".join(soft_skills) if isinstance(soft_skills, list) else str(soft_skills)),
+        ("保有資格", "、".join(certifications) if isinstance(certifications, list) else str(certifications)),
+        ("業界経験", "、".join(industries) if isinstance(industries, list) else str(industries)),
+        ("語学", "、".join(l.get("language", str(l)) if isinstance(l, dict) else str(l) for l in languages) if languages else ""),
+        ("経験レベル", str(experience_level)),
+        ("希望勤務形態", "、".join(work_styles) if isinstance(work_styles, list) else str(work_styles)),
+        ("市場価値スコア", f"{market_score}点"),
+        ("市場評価理由", "\n".join(f"・{r}" for r in market_reasons) if isinstance(market_reasons, list) else str(market_reasons)),
+        ("", ""),
+        ("＜検索条件＞", ""),
+        ("キーワード", "、".join(kws)),
+        ("希望年収", f"{sal_min}万〜{sal_max}万" if sal_min and sal_max else ""),
+        ("希望勤務地", str(loc)),
+    ]
+    df_profile = pd.DataFrame(profile_rows, columns=["項目", "内容"])
+
+    # --- Sheet2: マッチ求人一覧 ---
+    job_rows = []
+    for i, j in enumerate(ranked_jobs, 1):
+        job_rows.append({
+            "順位": i,
+            "マッチ度": j.get("score", 0),
+            "企業名": j.get("company", ""),
+            "ポジション名": _translate_title(j.get("title", "")),
+            "勤務地": j.get("location", ""),
+            "年収": j.get("salary", ""),
+            "ソース": j.get("source", ""),
+            "マッチする理由": j.get("match_reasons", ""),
+            "求人URL": _job_url(j.get("url", "")),
+        })
+    df_jobs = pd.DataFrame(job_rows) if job_rows else pd.DataFrame(
+        columns=["順位", "マッチ度", "企業名", "ポジション名", "勤務地", "年収", "ソース", "マッチする理由", "求人URL"]
+    )
+
+    # --- Excel書き出し ---
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df_profile.to_excel(writer, sheet_name="候補者プロフィール", index=False)
+        df_jobs.to_excel(writer, sheet_name="マッチ求人一覧", index=False)
+
+        # スタイリング
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
+        )
+
+        for sheet_name in ["候補者プロフィール", "マッチ求人一覧"]:
+            ws = writer.sheets[sheet_name]
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center")
+            for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
+                for cell in row:
+                    cell.border = thin_border
+                    if cell.row > 1:
+                        cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+        # 列幅調整
+        ws1 = writer.sheets["候補者プロフィール"]
+        ws1.column_dimensions["A"].width = 20
+        ws1.column_dimensions["B"].width = 80
+
+        ws2 = writer.sheets["マッチ求人一覧"]
+        col_widths = {"A": 6, "B": 8, "C": 25, "D": 35, "E": 15, "F": 15, "G": 12, "H": 50, "I": 50}
+        for col, w in col_widths.items():
+            ws2.column_dimensions[col].width = w
+
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def _get_label_thresholds():
     return get_app_setting("label_thresholds", {"recommended": 85, "good": 70})
 
@@ -555,7 +728,7 @@ def _render_ai_search_results(tab_key):
             st.markdown(f"""
             <div class="job-card">
                 <div style="font-size:1.05rem;font-weight:700;color:#1a202c;">
-                    {jt_icon} {esc(job.get('title',''))}
+                    {jt_icon} {esc(_translate_title(job.get('title','')))}
                 </div>
                 🏢 {esc(job.get('company',''))} &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
                 &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
@@ -860,7 +1033,7 @@ def show_candidate_popup(cand):
 
 @st.dialog("📋 求人詳細", width="large")
 def show_job_popup(job, candidates=None):
-    st.markdown(f"### {job.get('title', '不明')}")
+    st.markdown(f"### {_translate_title(job.get('title', '不明'))}")
     jt = job.get("job_type", "web")
     st.caption("📌 契約中" if jt == "contracted" else "🌐 Web掲載")
 
@@ -1048,7 +1221,7 @@ if page == "candidate_search":
                             {_score_badge(score)} <span style="color:#a0aec0;font-size:0.8rem;">{jt_icon} #{i+1}</span>
                             {_match_bar(score)}
                             <div style="font-size:1.05rem;font-weight:700;color:#1a202c;margin:0.3rem 0;">
-                                {esc(job.get('title','不明'))}
+                                {esc(_translate_title(job.get('title','不明')))}
                             </div>
                             🏢 <strong>{esc(job.get('company',''))}</strong>
                             &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
@@ -1072,14 +1245,27 @@ if page == "candidate_search":
                         df = pd.DataFrame([{
                             "順位": i, "スコア": j.get("score", 0),
                             "種別": "契約中" if j.get("job_type") == "contracted" else "Web",
-                            "求人タイトル": j.get("title", ""), "企業名": j.get("company", ""),
+                            "求人タイトル": _translate_title(j.get("title", "")), "企業名": j.get("company", ""),
                             "勤務地": j.get("location", ""), "年収": j.get("salary", ""),
                             "ソース": j.get("source", ""), "URL": _job_url(j.get("url", "")),
                         } for i, j in enumerate(filtered, 1)])
                         st.dataframe(df, hide_index=True, use_container_width=True)
-                        csv_buf = io.StringIO()
-                        df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
-                        st.download_button("CSV DL", csv_buf.getvalue(), "マッチング結果.csv", "text/csv")
+
+                        # --- Excel出力（2シート: 候補者情報 + 求人一覧） ---
+                        _dl1, _dl2 = st.columns(2)
+                        with _dl1:
+                            csv_buf = io.StringIO()
+                            df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
+                            st.download_button("📄 CSV DL", csv_buf.getvalue(), "マッチング結果.csv", "text/csv", key="cs_csv_dl")
+                        with _dl2:
+                            xlsx_buf = _build_matching_excel(active_cand, conditions, filtered)
+                            cand_name = active_cand.get("name", "候補者") if active_cand else "候補者"
+                            st.download_button(
+                                "📊 Excel DL（営業用）", xlsx_buf,
+                                f"マッチング_{cand_name}.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="cs_xlsx_dl",
+                            )
                 else:
                     st.info("条件に一致する求人がありません。")
 
@@ -1100,7 +1286,7 @@ if page == "candidate_search":
                         jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
                         st.markdown(f"""
                         <div class="job-card">
-                            {jt_icon} <strong>{esc(job.get('title',''))}</strong> - {esc(job.get('company',''))}
+                            {jt_icon} <strong>{esc(_translate_title(job.get('title','')))}</strong> - {esc(job.get('company',''))}
                             &nbsp;|&nbsp; 📍 {esc(job.get('location',''))} &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
                         </div>""", unsafe_allow_html=True)
             # AIトリガーの検索結果
@@ -1151,7 +1337,7 @@ elif page == "job_search":
                 st.markdown(f"""
                 <div class="job-card">
                     <div style="font-size:1.05rem;font-weight:700;color:#1a202c;">
-                        {jt_icon} {esc(job.get('title',''))}
+                        {jt_icon} {esc(_translate_title(job.get('title','')))}
                     </div>
                     🏢 {esc(job.get('company',''))} &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
                     &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
