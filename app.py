@@ -156,11 +156,18 @@ def run_fetch_sync(kw_list, location, sources, status_container=None):
         except Exception:
             pass
 
+    # フェッチログを表示（デバッグ情報）
+    _fl = get_fetch_log()
     if status_container:
         if all_jobs:
             status_container.update(label=result_msg, state="complete")
         else:
             status_container.update(label=result_msg, state="error")
+            # 0件の場合は取得ログを表示して原因を示す
+            if _fl:
+                status_container.write("--- 取得ログ（直近） ---")
+                for _line in _fl[-20:]:
+                    status_container.write(_line)
 
     return {"saved": saved if all_jobs else 0, "total": len(all_jobs), "elapsed": elapsed, "result": result_msg}
 
@@ -1487,10 +1494,35 @@ elif page == "data_import":
                     if _new_jooble_key.strip():
                         set_app_setting("jooble_api_key", _new_jooble_key.strip())
                         set_jooble_api_key(_new_jooble_key.strip())
-                        st.success("APIキーを保存しました。ページを再読み込みしてください。")
+                        st.success("APIキーを保存しました。")
                         st.rerun()
-                    else:
-                        st.error("APIキーを入力してください")
+            # 接続テスト
+            if _jooble_key:
+                if st.button("🧪 API接続テスト", key="dm_api_test"):
+                    with st.status("Jooble API接続テスト中...", expanded=True) as _tc:
+                        import requests as _req
+                        try:
+                            _test_resp = _req.post(
+                                f"https://jooble.org/api/{_jooble_key}",
+                                json={"keywords": "エンジニア", "location": "日本", "page": 1},
+                                headers={"Content-Type": "application/json"},
+                                timeout=20,
+                            )
+                            _tc.write(f"ステータス: {_test_resp.status_code}")
+                            _tc.write(f"レスポンスサイズ: {len(_test_resp.text)}文字")
+                            if _test_resp.status_code == 200:
+                                _test_data = _test_resp.json()
+                                _tc.write(f"totalCount: {_test_data.get('totalCount', '?')}")
+                                _tc.write(f"jobs: {len(_test_data.get('jobs', []))}件")
+                                if _test_data.get("jobs"):
+                                    _tc.write(f"例: {_test_data['jobs'][0].get('title', '?')}")
+                                _tc.update(label="API接続成功", state="complete")
+                            else:
+                                _tc.write(f"レスポンス: {_test_resp.text[:500]}")
+                                _tc.update(label=f"API接続失敗 ({_test_resp.status_code})", state="error")
+                        except Exception as _e:
+                            _tc.write(f"エラー: {_e}")
+                            _tc.update(label="API接続エラー", state="error")
 
         st.markdown("**取得ソース:**")
         enabled_sources = []

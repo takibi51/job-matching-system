@@ -251,27 +251,36 @@ def fetch_jooble(keyword: str, location: str = "", max_pages: int = 3) -> List[D
         return _fetch_jooble_scrape(keyword, location, max_pages)
 
     jobs = []
-    _log(f"Jooble API: keyword={keyword}, location={location}")
+    _log(f"Jooble API: keyword={keyword}, location={location}, key={api_key[:8]}...")
 
     for page in range(1, max_pages + 1):
         _rate_limit("jooble.org", 1.0)
         try:
+            url = f"https://jooble.org/api/{api_key}"
+            payload = {
+                "keywords": keyword,
+                "location": location or "日本",
+                "page": page,
+            }
+            _log(f"Jooble API: POST {url[:40]}... payload={payload}")
             resp = requests.post(
-                f"https://jooble.org/api/{api_key}",
-                json={
-                    "keywords": keyword,
-                    "location": location or "日本",
-                    "page": page,
+                url,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (compatible; JobSearchBot/1.0)",
                 },
-                headers={"Content-Type": "application/json"},
-                timeout=15,
+                timeout=20,
             )
+            _log(f"Jooble API: status={resp.status_code}, length={len(resp.text)}")
             if resp.status_code != 200:
-                _log(f"Jooble API: page={page} → {resp.status_code}")
+                _log(f"Jooble API: page={page} → {resp.status_code}: {resp.text[:300]}")
                 break
 
             data = resp.json()
+            total_count = data.get("totalCount", "?")
             items = data.get("jobs", [])
+            _log(f"Jooble API: totalCount={total_count}, jobs={len(items)}")
             if not items:
                 break
 
