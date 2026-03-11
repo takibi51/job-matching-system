@@ -1984,24 +1984,21 @@ elif page == "data_import":
 
             with kw_tab1:
                 # フリーワード追加
-                new_kw = st.text_input("フリーワード", placeholder="例: Webデザイナー", key="dm_new_kw")
-                new_kw_locs = st.multiselect("勤務地（複数選択可）", _LOCATION_OPTIONS, default=["全国"], key="dm_kw_locs")
-                _auto_start = st.checkbox("登録と同時に求人取得を開始する", value=True, key="dm_auto_fetch_free")
-                if st.button("追加", key="dm_add_kw_btn"):
-                    if new_kw.strip():
-                        _loc_val = "" if (not new_kw_locs or "全国" in new_kw_locs) else new_kw_locs[0]
-                        if add_keyword(new_kw.strip(), _loc_val):
-                            st.success(f"「{new_kw}」を追加")
-                            if _auto_start:
-                                # 複数勤務地の場合、各地域で取得
-                                _fetch_locs = [l for l in new_kw_locs if l != "全国"] if new_kw_locs else [""]
-                                if not _fetch_locs:
-                                    _fetch_locs = [""]
-                                with st.status("求人取得中...", expanded=True) as _sc:
-                                    for _fl in _fetch_locs:
-                                        run_fetch_sync([new_kw.strip()], _fl, list(SOURCE_NAMES), status_container=_sc)
-                                set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
-                            st.rerun()
+                with st.form("dm_add_kw"):
+                    kc1, kc2 = st.columns([3, 1])
+                    new_kw = kc1.text_input("フリーワード", placeholder="例: Webデザイナー")
+                    new_kw_loc = kc2.selectbox("勤務地", _LOCATION_OPTIONS, index=0, key="dm_kw_loc")
+                    _auto_start = st.checkbox("登録と同時に求人取得を開始する", value=True, key="dm_auto_fetch_free")
+                    if st.form_submit_button("追加"):
+                        if new_kw.strip():
+                            _loc_val = "" if new_kw_loc == "全国" else new_kw_loc
+                            if add_keyword(new_kw.strip(), _loc_val):
+                                st.success(f"「{new_kw}」を追加")
+                                if _auto_start:
+                                    with st.status("求人取得中...", expanded=True) as _sc:
+                                        run_fetch_sync([new_kw.strip()], _loc_val, list(SOURCE_NAMES), status_container=_sc)
+                                    set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
+                                st.rerun()
 
                 st.markdown("---")
                 st.markdown("**職域から選択して追加**")
