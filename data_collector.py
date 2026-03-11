@@ -687,7 +687,99 @@ def _parse_recruit_item(item: dict, default_location: str = "") -> Optional[Dict
 
 
 # ============================================================
-# 6. Web検索（DuckDuckGo経由で主要求人サイトの情報を収集）
+# 6. マイナビ転職（HTMLパース・個別求人URL取得可能）
+# ============================================================
+
+def fetch_mynavi(keyword: str, location: str = "", max_pages: int = 5) -> List[Dict]:
+    """マイナビ転職から個別求人情報を取得"""
+    if not _HAS_BS4:
+        return []
+    jobs = []
+    _log(f"マイナビ転職: keyword={keyword}, location={location}")
+
+    for page in range(1, max_pages + 1):
+        _rate_limit("tenshoku.mynavi.jp", 1.5)
+        try:
+            url = f"https://tenshoku.mynavi.jp/list/kw0+{urllib.parse.quote(keyword)}/"
+            params = {}
+            if page > 1:
+                params["pg"] = page
+            resp = requests.get(url, params=params, headers=_get_headers(), timeout=20)
+            if resp.status_code != 200:
+                _log(f"マイナビ転職: status={resp.status_code}")
+                break
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            cassettes = soup.select(".cassetteRecruit")
+            if not cassettes:
+                _log(f"マイナビ転職: page={page} → カードなし")
+                break
+
+            page_count = 0
+            for c in cassettes:
+                try:
+                    link = c.select_one('a[href*="jobinfo"]')
+                    name_el = c.select_one(".cassetteRecruit__name")
+                    if not link:
+                        continue
+
+                    href = link.get("href", "")
+                    if href.startswith("//"):
+                        href = "https:" + href
+                    title = link.get_text(strip=True)[:100]
+                    company = ""
+                    if name_el:
+                        company = name_el.get_text(strip=True).split("|")[0].strip()[:50]
+
+                    salary = ""
+                    loc = ""
+                    desc = ""
+                    tbl = c.select_one(".tableCondition")
+                    if tbl:
+                        for row in tbl.select("tr"):
+                            th = row.select_one("th, dt")
+                            td = row.select_one("td, dd")
+                            if not th or not td:
+                                continue
+                            label = th.get_text(strip=True)
+                            val = td.get_text(strip=True)
+                            if "給" in label or "年収" in label:
+                                salary = val[:100]
+                            elif "勤務地" in label:
+                                loc = val[:100]
+                            elif "仕事" in label:
+                                desc = val[:500]
+
+                    if not title:
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": company,
+                        "location": loc or location,
+                        "salary": salary,
+                        "url": href,
+                        "description": desc,
+                        "source": "マイナビ転職",
+                        "pub_date": "",
+                    })
+                    page_count += 1
+                except Exception:
+                    continue
+
+            _log(f"マイナビ転職: page={page} → {page_count}件")
+            if page_count == 0:
+                break
+        except Exception as e:
+            _log(f"マイナビ転職: page={page} → エラー: {e}")
+            break
+
+    result = _deduplicate(jobs)
+    _log(f"マイナビ転職: {len(result)}件取得完了")
+    return result
+
+
+# ============================================================
+# 7. Web検索（DuckDuckGo経由で主要求人サイトの情報を収集）
 # ============================================================
 
 # 検索結果から求人情報を抽出する対象サイト
@@ -823,6 +915,7 @@ def fetch_web_search(keyword: str, location: str = "", max_pages: int = 2) -> Li
 
 SOURCES = {
     "Jooble": {"func": fetch_jooble, "enabled": True},
+    "マイナビ転職": {"func": fetch_mynavi, "enabled": True},
     "Web検索": {"func": fetch_web_search, "enabled": True},
     "CareerJet": {"func": fetch_careerjet_api, "enabled": True},
     "求人ボックス": {"func": fetch_kyujinbox, "enabled": True},
