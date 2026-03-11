@@ -17,8 +17,12 @@ import time
 import random
 import json
 import logging
+import os
 from typing import List, Dict, Optional, Callable
 from datetime import datetime
+
+# Streamlit Cloud判定（クラウドではスクレイピングが動かないためAPI優先）
+_IS_CLOUD = bool(os.environ.get("STREAMLIT_SERVER_ADDRESS") or os.path.exists("/mount/src"))
 
 # エラーログ（バックグラウンド取得の問題特定用）
 _fetch_log: List[str] = []
@@ -239,7 +243,11 @@ def fetch_jooble(keyword: str, location: str = "", max_pages: int = 3) -> List[D
     """Jooble APIから求人取得（公開REST API）"""
     api_key = _JOOBLE_API_KEY
     if not api_key:
-        # APIキー未設定の場合はスクレイピングフォールバック
+        if _IS_CLOUD:
+            _log("⚠️ Jooble APIキーが未設定です。クラウド環境ではAPIキーが必要です。")
+            _log("📋 設定方法: データ管理タブ → API設定 でJooble APIキーを入力してください")
+            _log("🔗 キー取得: https://jooble.org/api/about （無料・即時発行）")
+            return []
         return _fetch_jooble_scrape(keyword, location, max_pages)
 
     jobs = []
@@ -557,11 +565,14 @@ def _parse_recruit_item(item: dict, default_location: str = "") -> Optional[Dict
 # ============================================================
 
 SOURCES = {
-    "CareerJet": {"func": fetch_careerjet, "enabled": True},
     "Jooble": {"func": fetch_jooble, "enabled": True},
-    "求人ボックス": {"func": fetch_kyujinbox, "enabled": True},
-    "リクルートエージェント": {"func": fetch_recruit_agent, "enabled": True},
+    "CareerJet": {"func": fetch_careerjet, "enabled": not _IS_CLOUD},
+    "求人ボックス": {"func": fetch_kyujinbox, "enabled": not _IS_CLOUD},
+    "リクルートエージェント": {"func": fetch_recruit_agent, "enabled": not _IS_CLOUD},
 }
+
+if _IS_CLOUD:
+    _log("☁️ クラウド環境を検出: Jooble APIをメインソースとして使用します")
 
 SOURCE_NAMES = list(SOURCES.keys())
 

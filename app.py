@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data_collector import (
     fetch_from_all_sources, parse_csv_upload, parse_text_input,
-    generate_search_urls, SOURCE_NAMES, get_fetch_log,
+    generate_search_urls, SOURCE_NAMES, get_fetch_log, set_jooble_api_key,
 )
 from scorer import rank_jobs, generate_search_queries, score_job
 from candidate_loader import (
@@ -53,6 +53,18 @@ from ai_generator import (
     detect_chat_action,
 )
 from auth import check_password, check_session_timeout, render_logout_button, safe_url
+
+# ============================================================
+# Jooble APIキー読み込み（st.secrets → DB設定のフォールバック）
+# ============================================================
+try:
+    _jooble_key = st.secrets.get("api_keys", {}).get("jooble", "")
+except Exception:
+    _jooble_key = ""
+if not _jooble_key:
+    _jooble_key = get_app_setting("jooble_api_key", "")
+if _jooble_key:
+    set_jooble_api_key(_jooble_key)
 
 # ============================================================
 # 勤務地プルダウン選択肢
@@ -1452,10 +1464,39 @@ elif page == "data_import":
         _auto_kws = get_enabled_keywords()
         _auto_refresh_needed = _hours_since >= _AUTO_REFRESH_HOURS and _auto_kws
 
+        # --- API設定 ---
+        with st.expander("🔑 API設定（求人データの取得に必要）", expanded=not _jooble_key):
+            if _jooble_key:
+                st.success("Jooble APIキー: 設定済み")
+            else:
+                st.warning("⚠️ Jooble APIキーが未設定です。クラウド環境では求人データを取得できません。")
+                st.markdown("""
+**設定手順（無料・5分で完了）:**
+1. [Jooble API登録ページ](https://jooble.org/api/about) にアクセス
+2. メールアドレスを入力してAPIキーを取得
+3. 下のフォームにキーを貼り付けて保存
+""")
+            with st.form("api_key_form"):
+                _new_jooble_key = st.text_input(
+                    "Jooble APIキー",
+                    value=_jooble_key or "",
+                    type="password",
+                    placeholder="APIキーを入力",
+                )
+                if st.form_submit_button("保存"):
+                    if _new_jooble_key.strip():
+                        set_app_setting("jooble_api_key", _new_jooble_key.strip())
+                        set_jooble_api_key(_new_jooble_key.strip())
+                        st.success("APIキーを保存しました。ページを再読み込みしてください。")
+                        st.rerun()
+                    else:
+                        st.error("APIキーを入力してください")
+
         st.markdown("**取得ソース:**")
         enabled_sources = []
         src_cols = st.columns(len(SOURCE_NAMES))
         for i, name in enumerate(SOURCE_NAMES):
+            _src_default = name in SOURCE_NAMES[:1]  # Joobleをデフォルト有効
             if src_cols[i].checkbox(name, value=True, key=f"dm_src_{name}"):
                 enabled_sources.append(name)
 
