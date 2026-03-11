@@ -440,7 +440,9 @@ def _filter_jobs_by_locations(jobs, selected_locations):
 
 
 def _filter_jobs_by_exclude_words(jobs, exclude_text):
-    """除外ワードでフィルタ。半角/全角スペース区切り"""
+    """除外ワードでフィルタ。半角/全角スペース区切り。
+    翻訳後タイトル・給与も含めてチェックし、漏れを防ぐ。
+    """
     if not exclude_text or not exclude_text.strip():
         return jobs
     # 半角・全角スペースで分割
@@ -450,9 +452,14 @@ def _filter_jobs_by_exclude_words(jobs, exclude_text):
         return jobs
     filtered = []
     for j in jobs:
+        raw_title = j.get("title", "")
+        translated_title = _translate_title(raw_title)
         jtext = " ".join([
-            j.get("title", ""), j.get("company", ""),
-            j.get("location", ""), j.get("description", ""),
+            raw_title, translated_title,
+            j.get("company", ""),
+            j.get("location", ""),
+            j.get("salary", ""),
+            j.get("description", ""),
         ]).lower()
         if not any(w in jtext for w in words):
             filtered.append(j)
