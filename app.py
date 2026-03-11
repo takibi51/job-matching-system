@@ -305,18 +305,26 @@ web_count = jt_stats.get("web", 0)
 st.sidebar.caption(f"👤 候補者: {len(saved_cands)}名")
 st.sidebar.caption(f"📌 契約中求人: {contracted_count}件 / 🌐 Web掲載: {web_count}件")
 
-# バックグラウンド取得ステータス
+# バックグラウンド取得ステータス（全ページ共通）
 _bg = _get_bg_status()
 if _bg["status"] == "running":
+    # 全ページで2秒ごとに自動更新（進捗をリアルタイム表示）
+    st_autorefresh(interval=2000, limit=500, key="global_bg_refresh")
     st.sidebar.markdown("---")
-    st.sidebar.markdown("🔄 **データ取得中**")
     pct = _bg["progress"]
     st.sidebar.markdown(
-        f'<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>',
+        f"""<div style="padding:10px;border-radius:8px;background:linear-gradient(135deg,#667eea22,#764ba222);border:1px solid #667eea44;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <div style="width:12px;height:12px;border-radius:50%;background:#667eea;animation:pulse 1.5s infinite;"></div>
+            <strong style="color:#667eea;">データ取得中</strong>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>
+        <div style="font-size:0.8em;color:#666;margin-top:4px;">{esc(_bg["progress_detail"])}</div>
+        <div style="font-size:0.75em;color:#999;margin-top:2px;">他のタブで作業を続けられます</div>
+        </div>
+        <style>@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}</style>""",
         unsafe_allow_html=True
     )
-    st.sidebar.caption(_bg["progress_detail"])
-    st.sidebar.caption("他のタブを自由にお使いください")
 elif _bg["status"] == "done":
     st.sidebar.markdown("---")
     st.sidebar.success(_bg["result"])
@@ -1712,15 +1720,19 @@ elif page == "data_import":
 
         bg = _get_bg_status()
         if bg["status"] == "running":
-            # 進捗ポーリング: 2秒ごとに再描画
-            st_autorefresh(interval=2000, limit=300, key="bg_fetch_refresh")
             pct = bg["progress"]
             st.markdown(
-                f'<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>',
+                f"""<div style="padding:12px;border-radius:8px;background:linear-gradient(135deg,#667eea11,#764ba211);border:1px solid #667eea33;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                    <div style="width:14px;height:14px;border:3px solid #667eea44;border-top:3px solid #667eea;border-radius:50%;animation:spin 1s linear infinite;"></div>
+                    <strong>求人データを取得中...</strong>
+                </div>
+                <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>
+                <div style="font-size:0.85em;color:#555;margin-top:6px;">{esc(bg["progress_detail"])}</div>
+                </div>
+                <style>@keyframes spin{{from{{transform:rotate(0deg)}}to{{transform:rotate(360deg)}}}}</style>""",
                 unsafe_allow_html=True
             )
-            st.caption(bg["progress_detail"])
-            st.info("🔄 取得中... 他のタブで作業を続けられます。")
         elif bg["status"] == "done":
             st.success(bg["result"])
             if st.button("OK", key="dm_bg_clear"):
