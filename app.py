@@ -105,6 +105,11 @@ check_session_timeout()
 
 def run_fetch_sync(kw_list, location, sources, status_container=None):
     """求人を同期的に取得（進捗をst.status()でリアルタイム表示）"""
+    # Jooble APIキーを確実に再読み込み（デプロイ後のDB復元対策）
+    _key = get_app_setting("jooble_api_key", "")
+    if _key:
+        set_jooble_api_key(_key)
+
     start = _time.time()
     total_steps = len(kw_list) * len(sources)
     completed = 0
