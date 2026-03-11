@@ -1450,7 +1450,7 @@ elif page == "data_import":
         if _hours_since >= _AUTO_REFRESH_HOURS and _auto_kws and _get_bg_status()["status"] != "running":
             _auto_kw_list = [kw["keyword"] for kw in _auto_kws]
             _auto_sources = list(SOURCE_NAMES)
-            if start_bg_fetch(_auto_kw_list, "大阪", _auto_sources):
+            if start_bg_fetch(_auto_kw_list, "", _auto_sources):
                 set_app_setting("last_auto_fetch_at", _now_ts.isoformat())
                 st.toast("🔄 半日ごとの自動更新を開始しました")
                 st.rerun()
@@ -1473,7 +1473,7 @@ elif page == "data_import":
                 with st.form("dm_add_kw"):
                     kc1, kc2 = st.columns([3, 1])
                     new_kw = kc1.text_input("キーワード", placeholder="例: Webデザイナー")
-                    new_kw_loc = kc2.text_input("勤務地", value="大阪", key="dm_kw_loc")
+                    new_kw_loc = kc2.text_input("勤務地（空欄=全国）", value="", key="dm_kw_loc")
                     if st.form_submit_button("追加"):
                         if new_kw.strip():
                             if add_keyword(new_kw.strip(), new_kw_loc.strip()):
@@ -1484,36 +1484,55 @@ elif page == "data_import":
                 st.caption("登録候補者のスキル・職種からキーワードを自動提案します")
                 _cands_for_kw = get_saved_candidates()
                 if _cands_for_kw:
-                    # 候補者からキーワード候補を抽出
                     _existing_kws = {kw["keyword"] for kw in get_keywords()}
-                    _suggest_kws = {}
+                    # カテゴリ別にキーワード候補を抽出
+                    _sug_categories = {
+                        "🔧 スキル": {},
+                        "💼 職種・職域": {},
+                        "📜 資格": {},
+                        "🏢 業界": {},
+                    }
                     for c in _cands_for_kw:
                         tags = c.get("tags", {})
                         info = c.get("info", {})
-                        # スキル
                         for s in tags.get("skills", []):
                             if s not in _existing_kws:
-                                _suggest_kws.setdefault(s, []).append(c["name"])
-                        # 職種キーワード
+                                _sug_categories["🔧 スキル"].setdefault(s, []).append(c["name"])
                         for s in tags.get("job_domains", []):
                             if s not in _existing_kws:
-                                _suggest_kws.setdefault(s, []).append(c["name"])
-                        # 希望職種
+                                _sug_categories["💼 職種・職域"].setdefault(s, []).append(c["name"])
                         desired = info.get("desired_position") or info.get("current_position", "")
                         if desired and desired not in _existing_kws:
-                            _suggest_kws.setdefault(desired, []).append(c["name"])
+                            _sug_categories["💼 職種・職域"].setdefault(desired, []).append(c["name"])
+                        for s in tags.get("certifications", []):
+                            if s not in _existing_kws:
+                                _sug_categories["📜 資格"].setdefault(s, []).append(c["name"])
+                        for s in tags.get("industries", []):
+                            if s not in _existing_kws:
+                                _sug_categories["🏢 業界"].setdefault(s, []).append(c["name"])
 
-                    if _suggest_kws:
-                        _sorted_suggests = sorted(_suggest_kws.items(), key=lambda x: len(x[1]), reverse=True)
+                    _has_any = any(v for v in _sug_categories.values())
+                    if _has_any:
                         _selected_sugs = []
-                        for sug_kw, cand_names in _sorted_suggests[:20]:
-                            if st.checkbox(f"{sug_kw}（{', '.join(list(set(cand_names))[:2])}）", key=f"dm_sug_{sug_kw}"):
-                                _selected_sugs.append(sug_kw)
-                        if _selected_sugs and st.button("選択したキーワードを登録", type="primary", key="dm_sug_add"):
-                            for skw in _selected_sugs:
-                                add_keyword(skw, "大阪")
-                            st.success(f"{len(_selected_sugs)}件のキーワードを追加しました")
-                            st.rerun()
+                        for cat_name, cat_kws in _sug_categories.items():
+                            if not cat_kws:
+                                continue
+                            st.markdown(f"**{cat_name}**")
+                            _sorted = sorted(cat_kws.items(), key=lambda x: len(x[1]), reverse=True)
+                            for sug_kw, cand_names in _sorted[:10]:
+                                _unique_names = list(set(cand_names))[:3]
+                                label = f"{sug_kw} ← {', '.join(_unique_names)}"
+                                if st.checkbox(label, key=f"dm_sug_{cat_name}_{sug_kw}"):
+                                    _selected_sugs.append(sug_kw)
+                        if _selected_sugs:
+                            st.markdown("---")
+                            st.markdown(f"**追加されるキーワード（{len(_selected_sugs)}件）:** " +
+                                        ", ".join(f"「{k}」" for k in _selected_sugs))
+                            if st.button("選択したキーワードを登録", type="primary", key="dm_sug_add"):
+                                for skw in _selected_sugs:
+                                    add_keyword(skw, "")
+                                st.success(f"{len(_selected_sugs)}件のキーワードを追加しました")
+                                st.rerun()
                     else:
                         st.info("追加可能なキーワード候補はありません（全て登録済み）")
                 else:
@@ -1537,7 +1556,7 @@ elif page == "data_import":
                     remove_keyword(kw["id"])
                     st.rerun()
 
-        fetch_loc = st.text_input("取得勤務地", value="大阪", key="dm_fetch_loc")
+        fetch_loc = st.text_input("取得勤務地（空欄=全国）", value="", key="dm_fetch_loc", placeholder="例: 東京、大阪 など（空欄で全国）")
 
         # 自動更新状態の表示
         if _last_auto:
