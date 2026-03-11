@@ -13,7 +13,14 @@ import html
 import re
 import threading
 import time as _time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+JST = timezone(timedelta(hours=9))
+
+
+def _now_jst() -> datetime:
+    """日本時間の現在時刻"""
+    return datetime.now(JST)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -99,7 +106,7 @@ def _bg_fetch_worker(kw_list, location, sources):
     try:
         with _BG_LOCK:
             _bg_state["status"] = "running"
-            _bg_state["started"] = datetime.now().isoformat()
+            _bg_state["started"] = _now_jst().isoformat()
             _bg_state["progress"] = 0
             _bg_state["progress_detail"] = "準備中..."
             _bg_state["jobs_found"] = 0
@@ -119,7 +126,7 @@ def _bg_fetch_worker(kw_list, location, sources):
         total_steps = len(kw_list) * len(sources)
         completed = 0
         all_jobs = []
-        kw_jobs_count = {kw: 0 for kw in kw_list}
+        seen_urls = set()  # URL重複を正確にトラッキング
 
         for si, source_name in enumerate(sources):
             for ki, kw in enumerate(kw_list):
@@ -135,34 +142,39 @@ def _bg_fetch_worker(kw_list, location, sources):
 
                 try:
                     jobs = fetch_from_all_sources([kw], location, enabled_sources=[source_name])
-                    all_jobs.extend(jobs)
-                    kw_jobs_count[kw] = kw_jobs_count.get(kw, 0) + len(jobs)
+                    # URL重複を除外して正確な件数を追跡
+                    for job in jobs:
+                        url = job.get("url", "")
+                        if url and url not in seen_urls:
+                            seen_urls.add(url)
+                            all_jobs.append(job)
                     with _BG_LOCK:
                         _bg_state["jobs_found"] = len(all_jobs)
                 except Exception:
                     pass
                 completed += 1
 
-        # キーワードごとの結果をDBに保存
-        for kw in kw_list:
-            try:
-                update_keyword_status(kw, "done", kw_jobs_count.get(kw, 0))
-            except Exception:
-                pass
-
+        # DB保存 → 実際の新規保存件数を取得
         elapsed = _time.time() - start
         with _BG_LOCK:
             _bg_state["progress"] = 100
             if all_jobs:
                 saved = save_jobs(all_jobs)
                 add_collection_log(len(kw_list), len(all_jobs), saved, ",".join(sources), elapsed)
-                _bg_state["result"] = f"✅ {len(all_jobs)}件取得 → {saved}件新規保存（{elapsed:.1f}秒）"
+                _bg_state["result"] = f"✅ {saved}件を新規保存（{elapsed:.1f}秒・{len(all_jobs)}件中）"
             else:
                 add_collection_log(len(kw_list), 0, 0, ",".join(sources), elapsed)
                 _bg_state["result"] = "⚠️ 取得0件でした"
             _bg_state["progress_detail"] = "完了"
-            _bg_state["jobs_found"] = len(all_jobs)
+            _bg_state["jobs_found"] = saved if all_jobs else 0
             _bg_state["status"] = "done"
+
+        # キーワードごとの実際のDB件数を更新
+        for kw in kw_list:
+            try:
+                update_keyword_status(kw, "done")
+            except Exception:
+                pass
     except Exception as e:
         with _BG_LOCK:
             _bg_state["status"] = "error"
@@ -371,7 +383,7 @@ if _bg["status"] == "running":
     _remaining_str = ""
     try:
         _started = datetime.fromisoformat(_bg["started"])
-        _elapsed_sec = (datetime.now() - _started).total_seconds()
+        _elapsed_sec = (_now_jst() - _started).total_seconds()
         _elapsed_str = f"{int(_elapsed_sec)}秒" if _elapsed_sec < 60 else f"{int(_elapsed_sec // 60)}分{int(_elapsed_sec % 60)}秒"
         if pct > 5:
             _total_est = _elapsed_sec / (pct / 100)
@@ -397,7 +409,7 @@ if _bg["status"] == "running":
         <div style="margin-top:8px;font-size:0.82em;">
             <div style="color:#444;">📡 {_src}: 「{_kw}」</div>
             <div style="display:flex;justify-content:space-between;margin-top:4px;color:#666;">
-                <span>📋 {_found}件取得済み</span>
+                <span>📋 {_found}件（重複除外済み）</span>
                 <span>⏱️ {_elapsed_str}</span>
             </div>
             <div style="color:#999;margin-top:4px;font-size:0.9em;">{_detail}</div>
@@ -1296,7 +1308,7 @@ elif page == "interview":
                         sections[cur_sec].append(lc)
 
                     parts = [f"# 面談シート: {iv_cand.get('name', '候補者')}",
-                             f"作成日: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
+                             f"作成日: {_now_jst().strftime('%Y-%m-%d %H:%M')}", ""]
                     for sec_name, sec_lines in sections.items():
                         if sec_lines:
                             parts.append(f"## {sec_name}")
@@ -1528,7 +1540,7 @@ elif page == "data_import":
         # --- 半日自動更新チェック ---
         _AUTO_REFRESH_HOURS = 12
         _last_auto = get_app_setting("last_auto_fetch_at")
-        _now_ts = datetime.now()
+        _now_ts = _now_jst()
         if _last_auto:
             try:
                 _last_dt = datetime.fromisoformat(_last_auto)
@@ -1658,7 +1670,7 @@ elif page == "data_import":
                                 st.success(f"「{new_kw}」を追加")
                                 if _auto_start and _get_bg_status()["status"] != "running":
                                     start_bg_fetch([new_kw.strip()], _loc_val, list(SOURCE_NAMES))
-                                    set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
+                                    set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
                                     st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
 
@@ -1695,7 +1707,7 @@ elif page == "data_import":
                                 st.success(f"{_added}件のキーワードを追加しました")
                                 if _auto_start_preset and _added_kws and _get_bg_status()["status"] != "running":
                                     start_bg_fetch(_added_kws, "", list(SOURCE_NAMES))
-                                    set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
+                                    set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
                                     st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
                     else:
@@ -1784,7 +1796,7 @@ elif page == "data_import":
                                 st.success(f"{len(_added_sug_kws)}件のキーワードを追加しました")
                                 if _auto_start_sug and _added_sug_kws and _get_bg_status()["status"] != "running":
                                     start_bg_fetch(_added_sug_kws, "", list(SOURCE_NAMES))
-                                    set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
+                                    set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
                                     st.toast("🔄 求人取得を開始しました")
                                 st.rerun()
                     else:
@@ -1815,7 +1827,7 @@ elif page == "data_import":
                     _badge = '<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:10px;font-size:0.75em;">🔄 取得中</span>'
                 elif _fs == "done":
                     _lf_short = _lf[:16].replace("T", " ") if _lf else ""
-                    _badge = f'<span style="background:#d4edda;color:#155724;padding:2px 8px;border-radius:10px;font-size:0.75em;">✅ {_jf}件取得</span>'
+                    _badge = f'<span style="background:#d4edda;color:#155724;padding:2px 8px;border-radius:10px;font-size:0.75em;">✅ {_jf}件保存済み</span>'
                 elif _fs == "error":
                     _badge = '<span style="background:#f8d7da;color:#721c24;padding:2px 8px;border-radius:10px;font-size:0.75em;">❌ エラー</span>'
                 else:
@@ -1845,7 +1857,7 @@ elif page == "data_import":
                 else:
                     if kc2.button("▶ 取得", key=f"dm_now_kw_{kw['id']}", help="このキーワードの求人を今すぐ取得"):
                         start_bg_fetch([kw["keyword"]], kw.get("location", ""), list(SOURCE_NAMES))
-                        set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
+                        set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
                         st.rerun()
                 # 自動取得ON/OFF
                 if _enabled:
@@ -1884,7 +1896,7 @@ elif page == "data_import":
             _dm_remain_str = ""
             try:
                 _dm_started = datetime.fromisoformat(bg["started"])
-                _dm_elapsed = (datetime.now() - _dm_started).total_seconds()
+                _dm_elapsed = (_now_jst() - _dm_started).total_seconds()
                 _dm_elapsed_str = f"{int(_dm_elapsed)}秒" if _dm_elapsed < 60 else f"{int(_dm_elapsed // 60)}分{int(_dm_elapsed % 60)}秒"
                 if pct > 5:
                     _dm_total_est = _dm_elapsed / (pct / 100)
@@ -1915,7 +1927,7 @@ elif page == "data_import":
                 <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%">{pct}%</div></div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px;font-size:0.88em;">
                     <div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
-                        <div style="color:#999;font-size:0.8em;">取得済み件数</div>
+                        <div style="color:#999;font-size:0.8em;">取得件数（重複除外）</div>
                         <div style="color:#333;font-weight:bold;font-size:1.2em;">📋 {_dm_found}件</div>
                     </div>
                     <div style="background:#f8f9fa;padding:8px 10px;border-radius:6px;">
@@ -1952,7 +1964,7 @@ elif page == "data_import":
                     st.error("ソースを1つ以上選択してください")
                 else:
                     if start_bg_fetch(kw_list, fetch_loc, enabled_sources):
-                        set_app_setting("last_auto_fetch_at", datetime.now().isoformat())
+                        set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
                         st.rerun()
 
         logs = get_collection_logs(5)
@@ -2001,7 +2013,7 @@ elif page == "data_import":
                     if j_title:
                         save_jobs([{
                             "title": j_title, "company": j_company,
-                            "url": j_url or f"contracted_{datetime.now().isoformat()}",
+                            "url": j_url or f"contracted_{_now_jst().isoformat()}",
                             "location": j_location, "salary": j_salary,
                             "description": j_desc, "source": "手動登録",
                         }], job_type="contracted")

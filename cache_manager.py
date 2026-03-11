@@ -9,7 +9,14 @@ import sqlite3
 import os
 import re
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+JST = timezone(timedelta(hours=9))
+
+
+def _now() -> datetime:
+    """日本時間の現在時刻を返す"""
+    return datetime.now(JST)
 from typing import List, Dict, Optional
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
@@ -198,15 +205,18 @@ def _init_db(conn: sqlite3.Connection):
 # ============================================================
 
 def save_jobs(jobs: List[Dict], job_type: str = "web") -> int:
-    """求人データを保存（URL重複は更新）。保存件数を返す。"""
+    """求人データを保存（URL重複は更新）。新規INSERT件数のみ返す。"""
     conn = _get_conn()
-    now = datetime.now().isoformat()
-    saved = 0
+    now = _now().isoformat()
+    new_count = 0
 
     for job in jobs:
         url = job.get("url", "").strip()
         if not url:
             continue
+
+        # 既存チェック（新規かどうかを正確にカウントするため）
+        existing = conn.execute("SELECT 1 FROM jobs WHERE url = ?", (url,)).fetchone()
 
         jt = job.get("job_type", job_type)
         conn.execute("""
@@ -233,10 +243,11 @@ def save_jobs(jobs: List[Dict], job_type: str = "web") -> int:
             jt,
             now, now,
         ))
-        saved += 1
+        if not existing:
+            new_count += 1
 
     conn.commit()
-    return saved
+    return new_count
 
 
 # ============================================================
@@ -331,7 +342,7 @@ def delete_job(url: str) -> bool:
 
 def delete_old_jobs(days: int = 60) -> int:
     conn = _get_conn()
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    cutoff = (_now() - timedelta(days=days)).isoformat()
     result = conn.execute("DELETE FROM jobs WHERE updated_at < ?", (cutoff,))
     conn.commit()
     return result.rowcount
@@ -371,7 +382,7 @@ def add_keyword(keyword: str, location: str = "") -> bool:
         return False
     conn.execute(
         "INSERT INTO collection_keywords (keyword, location, enabled, created_at) VALUES (?, ?, 1, ?)",
-        (keyword, location, datetime.now().isoformat())
+        (keyword, location, _now().isoformat())
     )
     conn.commit()
     return True
@@ -405,9 +416,14 @@ def update_keyword_status(keyword: str, status: str, jobs_found: int = 0):
     """キーワードの取得状態を更新（pending/fetching/done/error）"""
     conn = _get_conn()
     if status == "done":
+        # 実際のDB件数をカウント（キーワードがタイトル・説明に含まれる求人数）
+        actual_count = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE title LIKE ? OR description LIKE ?",
+            (f"%{keyword}%", f"%{keyword}%")
+        ).fetchone()[0]
         conn.execute(
             "UPDATE collection_keywords SET fetch_status = ?, jobs_found = ?, last_fetched_at = ? WHERE keyword = ?",
-            (status, str(jobs_found), datetime.now().isoformat(), keyword)
+            (status, str(actual_count), _now().isoformat(), keyword)
         )
     else:
         conn.execute(
@@ -422,7 +438,7 @@ def add_collection_log(keywords_used: int, jobs_found: int, jobs_saved: int,
     conn = _get_conn()
     conn.execute(
         "INSERT INTO collection_log (ran_at, keywords_used, jobs_found, jobs_saved, sources, duration_sec) VALUES (?, ?, ?, ?, ?, ?)",
-        (datetime.now().isoformat(), keywords_used, jobs_found, jobs_saved, sources, duration_sec)
+        (_now().isoformat(), keywords_used, jobs_found, jobs_saved, sources, duration_sec)
     )
     conn.commit()
 
@@ -443,7 +459,7 @@ def save_candidate(name: str, info: Dict, strengths: list, conditions: Dict,
          json.dumps(conditions, ensure_ascii=False),
          json.dumps(tags or {}, ensure_ascii=False),
          json.dumps(source_files or [], ensure_ascii=False),
-         datetime.now().isoformat())
+         _now().isoformat())
     )
     conn.commit()
     return cur.lastrowid
@@ -533,7 +549,7 @@ def save_candidate_file(candidate_id: int, filename: str, file_type: str = "",
     cur = conn.execute(
         "INSERT INTO candidate_files (candidate_id, filename, file_type, doc_type, file_size, extracted_text_length, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (candidate_id, filename, file_type, doc_type, file_size, extracted_text_length,
-         datetime.now().isoformat())
+         _now().isoformat())
     )
     conn.commit()
     return cur.lastrowid
@@ -558,7 +574,7 @@ PROPOSAL_STATUSES = ["提案済み", "カジュアル面談", "一次面接", "�
 
 def save_proposal(candidate_id: int, job_url: str, status: str = "提案済み", memo: str = "") -> int:
     conn = _get_conn()
-    now = datetime.now().isoformat()
+    now = _now().isoformat()
     cur = conn.execute(
         """INSERT INTO proposals (candidate_id, job_url, status, memo, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?)
@@ -571,7 +587,7 @@ def save_proposal(candidate_id: int, job_url: str, status: str = "提案済み",
 
 def update_proposal_status(proposal_id: int, status: str, memo: str = None, next_action: str = None):
     conn = _get_conn()
-    now = datetime.now().isoformat()
+    now = _now().isoformat()
     if memo is not None and next_action is not None:
         conn.execute("UPDATE proposals SET status=?, memo=?, next_action=?, updated_at=? WHERE id=?",
                      (status, memo, next_action, now, proposal_id))
@@ -603,7 +619,7 @@ def delete_proposal(proposal_id: int):
 def save_interview_sheet(candidate_id: int, raw_input: str, sheet_content: str, tags: list) -> int:
     import json
     conn = _get_conn()
-    now = datetime.now().isoformat()
+    now = _now().isoformat()
     cur = conn.execute(
         "INSERT INTO interview_sheets (candidate_id, raw_input, sheet_content, tags_json, created_at, updated_at) VALUES (?,?,?,?,?,?)",
         (candidate_id, raw_input, sheet_content, json.dumps(tags, ensure_ascii=False), now, now)
@@ -615,7 +631,7 @@ def save_interview_sheet(candidate_id: int, raw_input: str, sheet_content: str, 
 def update_interview_sheet(sheet_id: int, sheet_content: str, tags: list):
     import json
     conn = _get_conn()
-    now = datetime.now().isoformat()
+    now = _now().isoformat()
     conn.execute("UPDATE interview_sheets SET sheet_content=?, tags_json=?, updated_at=? WHERE id=?",
                  (sheet_content, json.dumps(tags, ensure_ascii=False), now, sheet_id))
     conn.commit()
@@ -681,7 +697,7 @@ def get_collection_logs(limit: int = 10) -> List[Dict]:
 def add_chat_message(tab: str, role: str, content: str, context: Dict = None) -> int:
     import json
     conn = _get_conn()
-    now = datetime.now().isoformat()
+    now = _now().isoformat()
     cur = conn.execute(
         "INSERT INTO chat_history (tab, role, content, context_json, created_at) VALUES (?, ?, ?, ?, ?)",
         (tab, role, content, json.dumps(context or {}, ensure_ascii=False), now)
@@ -718,7 +734,7 @@ def update_job_type(url: str, job_type: str):
     """求人の種別（contracted/web）を更新"""
     conn = _get_conn()
     conn.execute("UPDATE jobs SET job_type = ?, updated_at = ? WHERE url = ?",
-                 (job_type, datetime.now().isoformat(), url))
+                 (job_type, _now().isoformat(), url))
     conn.commit()
 
 
@@ -738,7 +754,7 @@ def get_job_type_stats() -> Dict:
 def add_access_log(event_type: str, detail: str = ""):
     """アクセスログを記録"""
     conn = _get_conn()
-    now = datetime.now().isoformat()
+    now = _now().isoformat()
     conn.execute(
         "INSERT INTO access_log (event_type, detail, created_at) VALUES (?, ?, ?)",
         (event_type, detail[:500], now)
@@ -764,7 +780,7 @@ def get_access_logs(limit: int = 50, event_type: str = None) -> List[Dict]:
 def clear_old_access_logs(days: int = 90):
     """古いアクセスログを削除"""
     conn = _get_conn()
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    cutoff = (_now() - timedelta(days=days)).isoformat()
     conn.execute("DELETE FROM access_log WHERE created_at < ?", (cutoff,))
     conn.commit()
 
