@@ -1359,6 +1359,7 @@ if page == "candidate_search":
             if cs_domain != "すべて":
                 cs_roles = _cf4.multiselect("職種で絞り込み", _JOB_PRESETS.get(cs_domain, []), key="cs_roles")
 
+            cs_locs = st.multiselect("勤務地で絞り込み（複数選択可・OR条件）", _LOCATION_OPTIONS, default=[], key="cs_locs_filter")
             cs_exclude = st.text_input("🚫 除外ワード（スペース区切り）", placeholder="例: 派遣 契約社員 未経験", key="cs_exclude")
 
             if stats["total_jobs"] == 0:
@@ -1372,12 +1373,16 @@ if page == "candidate_search":
                     matched_jobs = [j for j in matched_jobs if j.get("job_type", "web") == jt_val]
                 # 職域・職種フィルタ
                 matched_jobs = _filter_jobs_by_category(matched_jobs, cs_domain, cs_roles)
-                # 勤務地フィルタ（複数選択OR条件）
-                matched_jobs = _filter_jobs_by_locations(matched_jobs, conditions.get("_locations", []))
+                # 勤務地フィルタ（メイン画面のmultiselect優先、なければexpander内を使用）
+                _cs_loc_filter = cs_locs if cs_locs else conditions.get("_locations", [])
+                matched_jobs = _filter_jobs_by_locations(matched_jobs, _cs_loc_filter)
                 # 除外ワードフィルタ
                 matched_jobs = _filter_jobs_by_exclude_words(matched_jobs, cs_exclude)
 
                 if matched_jobs:
+                    # メイン画面の勤務地選択もスコアリングに反映
+                    if cs_locs:
+                        conditions["_locations"] = cs_locs
                     ranked = rank_jobs(matched_jobs, conditions)
                     fc1, fc2, fc3 = st.columns(3)
                     min_score = fc1.slider("最低スコア", 0, 100, 0, key="cs_fscore")
