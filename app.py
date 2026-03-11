@@ -866,29 +866,45 @@ if page == "candidate_search":
             st.info("候補者が登録されていません。「📦 データ取込」から追加してください。")
             sel_idx = -1
     with col_upload:
-        st.markdown("**クイックアップロード**")
+        st.markdown("**クイックアップロード**（複数可）")
         ext_list = list(SUPPORTED_EXTENSIONS.keys())
-        quick_upload = st.file_uploader(
+        quick_uploads = st.file_uploader(
             "候補者ファイル", type=[e.lstrip(".") for e in ext_list],
             key="cs_quick_upload", label_visibility="collapsed",
+            accept_multiple_files=True,
         )
-        if quick_upload:
-            file_bytes = quick_upload.read()
-            cand_data = load_candidate_upload(file_bytes, quick_upload.name)
-            if cand_data:
-                st.session_state["quick_cand"] = cand_data
-                st.success("読み取り完了")
+        if quick_uploads:
+            parsed_files = []
+            for uf in quick_uploads:
+                file_bytes = uf.read()
+                cand_data = load_candidate_upload(file_bytes, uf.name)
+                if cand_data:
+                    doc_type = _detect_file_type(uf.name, " ".join(str(v) for v in cand_data.get("info", {}).values()))
+                    cand_data["_file_type"] = doc_type
+                    parsed_files.append(cand_data)
+            if parsed_files:
+                merged = merge_candidate_uploads(parsed_files) if len(parsed_files) > 1 else parsed_files[0]
+                tags = extract_all_tags(
+                    " ".join(str(v) for v in merged.get("info", {}).values()),
+                    merged.get("info", {})
+                )
+                merged["tags"] = tags
+                st.session_state["quick_cand"] = merged
+                st.session_state["quick_cand_files"] = [uf.name for uf in quick_uploads]
+                st.success(f"{len(parsed_files)}件読み取り完了")
 
     active_cand = None
     conditions = None
 
-    if quick_upload and "quick_cand" in st.session_state:
+    if quick_uploads and "quick_cand" in st.session_state:
         active_cand = st.session_state["quick_cand"]
         conditions = active_cand.get("conditions", {})
-        save_name = st.text_input("候補者名", value=quick_upload.name.rsplit(".", 1)[0], key="cs_save_name")
+        _default_name = quick_uploads[0].name.rsplit(".", 1)[0] if quick_uploads else "候補者"
+        save_name = st.text_input("候補者名", value=_default_name, key="cs_save_name")
         if st.button("この候補者を保存", key="cs_save"):
             save_candidate(save_name, active_cand.get("info", {}),
-                           active_cand.get("strengths", []), conditions)
+                           active_cand.get("strengths", []), conditions,
+                           tags=active_cand.get("tags", {}))
             st.success(f"「{save_name}」を保存しました")
             st.rerun()
     elif sel_idx >= 0:
