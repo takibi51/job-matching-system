@@ -28,7 +28,7 @@ from data_collector import (
     fetch_from_all_sources, parse_csv_upload, parse_text_input,
     generate_search_urls, SOURCE_NAMES, get_fetch_log, set_jooble_api_key, _log,
 )
-from scorer import rank_jobs, generate_search_queries, score_job
+from scorer import rank_jobs, generate_search_queries, score_job, _parse_salary
 from candidate_loader import (
     load_all_candidates, load_candidate_upload, merge_candidate_uploads,
     extract_all_tags, SUPPORTED_EXTENSIONS, _detect_file_type,
@@ -459,6 +459,33 @@ def _filter_jobs_by_exclude_words(jobs, exclude_text):
     return filtered
 
 
+def _filter_jobs_by_salary_proximity(jobs, current_salary):
+    """現年収と求人年収が大きく乖離している求人を除外する。
+    current_salary が 0 の場合はフィルタしない。
+    許容範囲: 現年収の -30% 〜 +80%（例: 400万 → 280万〜720万の求人を残す）
+    年収情報がない求人はそのまま残す。
+    """
+    if not current_salary or current_salary <= 0:
+        return jobs
+    lower_bound = current_salary * 0.7   # -30%
+    upper_bound = current_salary * 1.8   # +80%
+    filtered = []
+    for j in jobs:
+        sal_text = j.get("salary", "")
+        if not sal_text or not sal_text.strip():
+            filtered.append(j)  # 年収情報なし → 残す
+            continue
+        sal_range = _parse_salary(sal_text)
+        if sal_range[1] <= 0:
+            filtered.append(j)  # パースできない → 残す
+            continue
+        # 求人の年収レンジが許容範囲とオーバーラップしているか
+        if sal_range[1] >= lower_bound and sal_range[0] <= upper_bound:
+            filtered.append(j)
+        # else: 乖離が大きい → 除外
+    return filtered
+
+
 def _build_matching_excel(candidate, conditions, ranked_jobs):
     """営業用Excel（2シート）を生成して BytesIO を返す"""
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -599,6 +626,7 @@ def _cand_to_conditions(cand):
         "location": c.get("location", "大阪"),
         "salary_min": c.get("salary_min", 0),
         "salary_max": c.get("salary_max", 0),
+        "current_salary": c.get("current_salary", 0),
         "age": c.get("age", 0),
         "prefer_kansai": c.get("prefer_kansai", True),
         "extra_keywords": c.get("extra_keywords", []),
@@ -1060,25 +1088,43 @@ def show_candidate_popup(cand):
             for nc in negative_checks:
                 st.warning(nc)
 
-        # 希望条件
-        st.markdown("#### 🎯 希望条件")
+        # 希望条件（編集可能）
+        st.markdown("#### 🎯 希望条件（編集可能）")
+        _cur_salary = conditions.get("current_salary", 0)
         sal_min = conditions.get("salary_min", 0)
         sal_max = conditions.get("salary_max", 0)
+        _pref_loc = conditions.get("location", "未指定")
+
+        _pc1, _pc2, _pc3, _pc4 = st.columns(4)
+        edited_cur_salary = _pc1.number_input("現年収(万)", value=int(_cur_salary), min_value=0, step=10, key=f"pop_cur_sal_{cid}")
+        edited_sal_min = _pc2.number_input("希望最低年収(万)", value=int(sal_min), min_value=0, step=10, key=f"pop_sal_min_{cid}")
+        edited_sal_max = _pc3.number_input("希望最高年収(万)", value=int(sal_max), min_value=0, step=10, key=f"pop_sal_max_{cid}")
+        _loc_idx = _LOCATION_OPTIONS.index(_pref_loc) if _pref_loc in _LOCATION_OPTIONS else 0
+        edited_location = _pc4.selectbox("希望勤務地", _LOCATION_OPTIONS, index=_loc_idx, key=f"pop_loc_{cid}")
+
+        # キーワード（編集可能）
+        _kw_list = conditions.get("keywords", [])
+        edited_kw_str = st.text_area("キーワード（改行区切りで編集）", value="\n".join(_kw_list), height=60,
+                                     key=f"pop_kw_{cid}")
+
+        # 表示用サマリー
         pref_parts = []
-        if sal_min or sal_max:
-            pref_parts.append(f"💰 {sal_min}万〜{sal_max}万円")
+        if edited_cur_salary:
+            pref_parts.append(f"📊 現年収: {edited_cur_salary}万円")
+        if edited_sal_min or edited_sal_max:
+            pref_parts.append(f"💰 希望: {edited_sal_min}万〜{edited_sal_max}万円")
         if work_styles:
             for ws in work_styles:
                 ws_icons = {"リモート": "🏠", "フレックス": "⏰", "時短": "🕐", "副業OK": "💼", "転勤なし": "📍"}
                 pref_parts.append(f"{ws_icons.get(ws, '✓')} {ws}")
         elif conditions.get("remote") or any("リモート" in str(v) for v in conditions.values()):
             pref_parts.append("🏠 リモート希望")
-        pref_parts.append(f"📍 {conditions.get('location', '未指定')}")
+        pref_parts.append(f"📍 {edited_location}")
         if availability:
             pref_parts.append(f"📅 入社: {availability}")
         if career_change_reasons:
             pref_parts.append(f"💭 動機: {'・'.join(career_change_reasons[:2])}")
-        st.markdown(" ・ ".join(pref_parts))
+        st.caption(" ・ ".join(pref_parts))
 
         # 職務要約
         st.markdown("#### 📝 職務要約")
@@ -1150,12 +1196,29 @@ def show_candidate_popup(cand):
     if f5.button("📤 提案する", key=f"pop_propose_{cid}", type="primary"):
         st.session_state[f"pop_propose_mode_{cid}"] = not st.session_state.get(f"pop_propose_mode_{cid}", False)
 
-    # メモ保存
-    if edited_memo != (personality_memo or ""):
-        if st.button("💾 メモを保存", key=f"pop_save_memo_{cid}", type="primary"):
+    # 変更検出 & 保存
+    _edited_kws = [k.strip() for k in edited_kw_str.split("\n") if k.strip()]
+    _has_changes = (
+        edited_memo != (personality_memo or "")
+        or _edited_kws != _kw_list
+        or int(edited_cur_salary) != int(_cur_salary)
+        or int(edited_sal_min) != int(sal_min)
+        or int(edited_sal_max) != int(sal_max)
+        or edited_location != _pref_loc
+    )
+    if _has_changes:
+        if st.button("💾 変更を保存", key=f"pop_save_all_{cid}", type="primary"):
             updated_info = {**info, "personality_memo": edited_memo}
-            update_candidate(cid, info=updated_info)
-            st.success("保存しました")
+            updated_conditions = {
+                **conditions,
+                "keywords": _edited_kws,
+                "current_salary": int(edited_cur_salary),
+                "salary_min": int(edited_sal_min),
+                "salary_max": int(edited_sal_max),
+                "location": edited_location,
+            }
+            update_candidate(cid, info=updated_info, conditions=updated_conditions)
+            st.success("保存しました（キーワード・年収・勤務地も反映）")
             st.rerun()
 
     # 面談シート表示
@@ -1330,6 +1393,7 @@ if page == "candidate_search":
             conditions = {
                 "keywords": kws, "location": loc_val,
                 "salary_min": salary_min, "salary_max": salary_max,
+                "current_salary": conditions.get("current_salary", 0),
                 "age": age_val, "prefer_kansai": True,
                 "extra_keywords": conditions.get("extra_keywords", []),
                 "_locations": loc_vals,  # 複数勤務地（内部用）
@@ -1378,6 +1442,9 @@ if page == "candidate_search":
                 matched_jobs = _filter_jobs_by_locations(matched_jobs, _cs_loc_filter)
                 # 除外ワードフィルタ
                 matched_jobs = _filter_jobs_by_exclude_words(matched_jobs, cs_exclude)
+                # 年収近接フィルタ（現年収と大きく乖離する求人を除外）
+                _cur_sal = conditions.get("current_salary", 0)
+                matched_jobs = _filter_jobs_by_salary_proximity(matched_jobs, _cur_sal)
 
                 if matched_jobs:
                     # メイン画面の勤務地選択もスコアリングに反映

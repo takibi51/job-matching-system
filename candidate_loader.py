@@ -711,11 +711,12 @@ def _build_conditions(info: Dict, strengths: List[Tuple[str, str]],
     if age_m:
         conditions["age"] = int(age_m.group(1))
 
-    # 年収
+    # 年収（現年収を保存 + 希望年収レンジを算出）
     salary_str = info.get("現年収", "") or info.get("年収", "") or info.get("希望年収", "")
     salary_nums = re.findall(r'[\d,]+', salary_str.replace(",", ""))
     if salary_nums:
         val = int(salary_nums[0])
+        conditions["current_salary"] = val  # 現年収を保存
         conditions["salary_min"] = int(val * 0.9)
         conditions["salary_max"] = int(val * 1.5)
 
