@@ -439,6 +439,26 @@ def _filter_jobs_by_locations(jobs, selected_locations):
     return filtered
 
 
+def _filter_jobs_by_exclude_words(jobs, exclude_text):
+    """除外ワードでフィルタ。半角/全角スペース区切り"""
+    if not exclude_text or not exclude_text.strip():
+        return jobs
+    # 半角・全角スペースで分割
+    words = re.split(r'[\s\u3000]+', exclude_text.strip())
+    words = [w.lower() for w in words if w]
+    if not words:
+        return jobs
+    filtered = []
+    for j in jobs:
+        jtext = " ".join([
+            j.get("title", ""), j.get("company", ""),
+            j.get("location", ""), j.get("description", ""),
+        ]).lower()
+        if not any(w in jtext for w in words):
+            filtered.append(j)
+    return filtered
+
+
 def _build_matching_excel(candidate, conditions, ranked_jobs):
     """営業用Excel（2シート）を生成して BytesIO を返す"""
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -1339,6 +1359,8 @@ if page == "candidate_search":
             if cs_domain != "すべて":
                 cs_roles = _cf4.multiselect("職種で絞り込み", _JOB_PRESETS.get(cs_domain, []), key="cs_roles")
 
+            cs_exclude = st.text_input("🚫 除外ワード（スペース区切り）", placeholder="例: 派遣 契約社員 未経験", key="cs_exclude")
+
             if stats["total_jobs"] == 0:
                 st.markdown('<div class="empty-state"><h3>求人データがまだありません</h3>'
                             '<p>「📦 データ取込」からデータを追加してください</p></div>',
@@ -1352,6 +1374,8 @@ if page == "candidate_search":
                 matched_jobs = _filter_jobs_by_category(matched_jobs, cs_domain, cs_roles)
                 # 勤務地フィルタ（複数選択OR条件）
                 matched_jobs = _filter_jobs_by_locations(matched_jobs, conditions.get("_locations", []))
+                # 除外ワードフィルタ
+                matched_jobs = _filter_jobs_by_exclude_words(matched_jobs, cs_exclude)
 
                 if matched_jobs:
                     ranked = rank_jobs(matched_jobs, conditions)
@@ -1477,6 +1501,7 @@ elif page == "job_search":
         js_roles = _jf4.multiselect("職種で絞り込み", _JOB_PRESETS.get(js_domain, []), key="js_roles")
 
     js_locs = st.multiselect("勤務地で絞り込み（複数選択可・OR条件）", _LOCATION_OPTIONS, default=[], key="js_locs")
+    js_exclude = st.text_input("🚫 除外ワード（スペース区切り）", placeholder="例: 派遣 契約社員 未経験", key="js_exclude")
 
     job_search_kw = st.text_input("求人を検索", placeholder="職種・企業名・キーワード", key="js_kw")
     if job_search_kw.strip():
@@ -1489,6 +1514,8 @@ elif page == "job_search":
     job_results = _filter_jobs_by_category(job_results, js_domain, js_roles)
     # 勤務地フィルタ（複数選択OR条件）
     job_results = _filter_jobs_by_locations(job_results, js_locs)
+    # 除外ワードフィルタ
+    job_results = _filter_jobs_by_exclude_words(job_results, js_exclude)
 
     selected_job_for_chat = None
 
@@ -1952,21 +1979,24 @@ elif page == "data_import":
 
             with kw_tab1:
                 # フリーワード追加
-                with st.form("dm_add_kw"):
-                    kc1, kc2 = st.columns([3, 1])
-                    new_kw = kc1.text_input("フリーワード", placeholder="例: Webデザイナー")
-                    new_kw_loc = kc2.selectbox("勤務地", _LOCATION_OPTIONS, index=0, key="dm_kw_loc")
-                    _auto_start = st.checkbox("登録と同時に求人取得を開始する", value=True, key="dm_auto_fetch_free")
-                    if st.form_submit_button("追加"):
-                        if new_kw.strip():
-                            _loc_val = "" if new_kw_loc == "全国" else new_kw_loc
-                            if add_keyword(new_kw.strip(), _loc_val):
-                                st.success(f"「{new_kw}」を追加")
-                                if _auto_start:
-                                    with st.status("求人取得中...", expanded=True) as _sc:
-                                        run_fetch_sync([new_kw.strip()], _loc_val, list(SOURCE_NAMES), status_container=_sc)
-                                    set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
-                                st.rerun()
+                new_kw = st.text_input("フリーワード", placeholder="例: Webデザイナー", key="dm_new_kw")
+                new_kw_locs = st.multiselect("勤務地（複数選択可）", _LOCATION_OPTIONS, default=["全国"], key="dm_kw_locs")
+                _auto_start = st.checkbox("登録と同時に求人取得を開始する", value=True, key="dm_auto_fetch_free")
+                if st.button("追加", key="dm_add_kw_btn"):
+                    if new_kw.strip():
+                        _loc_val = "" if (not new_kw_locs or "全国" in new_kw_locs) else new_kw_locs[0]
+                        if add_keyword(new_kw.strip(), _loc_val):
+                            st.success(f"「{new_kw}」を追加")
+                            if _auto_start:
+                                # 複数勤務地の場合、各地域で取得
+                                _fetch_locs = [l for l in new_kw_locs if l != "全国"] if new_kw_locs else [""]
+                                if not _fetch_locs:
+                                    _fetch_locs = [""]
+                                with st.status("求人取得中...", expanded=True) as _sc:
+                                    for _fl in _fetch_locs:
+                                        run_fetch_sync([new_kw.strip()], _fl, list(SOURCE_NAMES), status_container=_sc)
+                                set_app_setting("last_auto_fetch_at", _now_jst().isoformat())
+                            st.rerun()
 
                 st.markdown("---")
                 st.markdown("**職域から選択して追加**")
