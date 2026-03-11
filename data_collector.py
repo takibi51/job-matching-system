@@ -256,57 +256,43 @@ def fetch_jooble(keyword: str, location: str = "", max_pages: int = 3) -> List[D
     jobs = []
     _log(f"Jooble API: keyword={keyword}, location={location}, key={api_key[:8]}...")
 
-    # 日本版エンドポイントを優先、失敗時に国際版にフォールバック
-    _jooble_endpoints = [
-        f"https://jp.jooble.org/api/{api_key}",
-        f"https://jooble.org/api/{api_key}",
-    ]
+    # 国際版エンドポイント（jp.jooble.orgは405を返すため除外）
+    endpoint = f"https://jooble.org/api/{api_key}"
 
     for page in range(1, max_pages + 1):
         _rate_limit("jooble.org", 1.0)
         try:
             data = None
-            for endpoint in _jooble_endpoints:
-                # jp.jooble.orgは既に日本限定なのでlocationは都道府県のみ
-                # jooble.org（国際版）の場合は"日本"を付与
-                if "jp.jooble.org" in endpoint:
-                    _loc = location  # ユーザー指定の都道府県をそのまま使用
-                else:
-                    _loc = location or "日本"  # 国際版は"日本"でフィルタ
-                payload = {
-                    "keywords": keyword,
-                    "location": _loc,
-                    "page": page,
-                }
-                _log(f"Jooble API: POST {endpoint[:45]}... payload={payload}")
-                resp = requests.post(
-                    endpoint,
-                    json=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                    },
-                    timeout=20,
-                )
-                _log(f"Jooble API: status={resp.status_code}, length={len(resp.text)}")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    total_count = data.get("totalCount", 0)
-                    if total_count > 0:
-                        _log(f"Jooble API: {endpoint[:30]}... → totalCount={total_count}")
-                        # このエンドポイントが有効なので以降はこれだけ使う
-                        _jooble_endpoints = [endpoint]
-                        break
-                    else:
-                        _log(f"Jooble API: {endpoint[:30]}... → totalCount=0, 次のエンドポイントを試行")
-                else:
-                    _log(f"Jooble API: {endpoint[:30]}... → {resp.status_code}: {resp.text[:200]}")
+            # location: "Japan"で日本の求人に限定（"日本"は認識されない）
+            _loc = location if location else "Japan"
+            payload = {
+                "keywords": keyword,
+                "location": _loc,
+                "page": page,
+            }
+            _log(f"Jooble API: POST {endpoint[:45]}... payload={payload}")
+            resp = requests.post(
+                endpoint,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                },
+                timeout=20,
+            )
+            _log(f"Jooble API: status={resp.status_code}, length={len(resp.text)}")
+            if resp.status_code == 200:
+                data = resp.json()
+                total_count = data.get("totalCount", 0)
+                _log(f"Jooble API: totalCount={total_count}")
+            else:
+                _log(f"Jooble API: {resp.status_code}: {resp.text[:200]}")
+                break
 
             if not data:
                 break
 
             items = data.get("jobs", [])
-            _log(f"Jooble API: totalCount={data.get('totalCount', '?')}, jobs={len(items)}")
             if not items:
                 break
 

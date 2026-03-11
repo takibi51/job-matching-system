@@ -1522,13 +1522,12 @@ elif page == "data_import":
                     with st.status("Jooble API接続テスト中...", expanded=True) as _tc:
                         import requests as _req
                         _test_ok = False
-                        for _ep in [f"https://jp.jooble.org/api/{_jooble_key}",
-                                    f"https://jooble.org/api/{_jooble_key}"]:
+                        for _ep in [f"https://jooble.org/api/{_jooble_key}"]:
                             try:
                                 _tc.write(f"テスト: {_ep[:45]}...")
                                 _test_resp = _req.post(
                                     _ep,
-                                    json={"keywords": "エンジニア", "location": "", "page": 1},
+                                    json={"keywords": "エンジニア", "location": "Japan", "page": 1},
                                     headers={"Content-Type": "application/json"},
                                     timeout=20,
                                 )
