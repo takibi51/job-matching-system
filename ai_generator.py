@@ -66,10 +66,11 @@ def _reframe_text(text):
 
 
 def _get_candidate_fields(candidate):
-    """候補者データから主要フィールドを安全に取得"""
+    """候補者データから主要フィールドを安全に取得（タグ情報対応）"""
     info = candidate.get("info", {})
     strengths = candidate.get("strengths", [])
     conditions = candidate.get("conditions", {})
+    tags = candidate.get("tags", {})
 
     name = candidate.get("name", "候補者")
 
@@ -82,9 +83,21 @@ def _get_candidate_fields(candidate):
         elif isinstance(s, str):
             hard_skills.append(s)
 
+    # タグからスキルを補完
+    if tags.get("skills"):
+        for skill in tags["skills"]:
+            if skill not in hard_skills:
+                hard_skills.append(skill)
+
+    # タグから面談タグ→ソフトスキルを補完
+    if tags.get("interview_tags"):
+        soft_skills.extend(tags["interview_tags"])
+
     # infoからの情報取得
     job_type = info.get("職種", info.get("専門", info.get("経験領域", "")))
     experience = info.get("経験年数", info.get("経験", ""))
+    if not experience and tags.get("experience_years"):
+        experience = f"{tags['experience_years']}年"
     salary = conditions.get("salary_text", f"{conditions.get('salary_min', 300)}万〜{conditions.get('salary_max', 600)}万円")
     location = conditions.get("location", "")
     keywords = conditions.get("keywords", [])
@@ -95,21 +108,50 @@ def _get_candidate_fields(candidate):
         if any(w in k for w in ["注意", "懸念", "リスク", "ネガティブ"]):
             negatives.append(str(v))
 
-    # marketScore推定 (スキル数ベース)
-    market_score = min(100, 50 + len(hard_skills) * 8 + len(keywords) * 3)
+    # 転職回数によるリスク検出
+    job_count = tags.get("job_history_count", 0)
+    exp_years = tags.get("experience_years", 0)
+    if job_count >= 5 and exp_years > 0 and exp_years / job_count < 2:
+        negatives.append(f"転職回数が多い（{job_count}社 / {exp_years}年）")
+
+    # marketScore推定 (タグ情報で精緻化)
+    base_score = 50
+    base_score += min(20, len(hard_skills) * 4)  # スキル数
+    base_score += min(10, len(keywords) * 2)  # キーワード数
+    if tags.get("certifications"):
+        base_score += min(10, len(tags["certifications"]) * 3)
+    if tags.get("management", {}).get("has_experience"):
+        base_score += 5
+    if tags.get("languages"):
+        base_score += min(5, len(tags["languages"]) * 3)
+    if tags.get("experience_level") in ("シニア", "リード", "エグゼクティブ"):
+        base_score += 5
+    if tags.get("achievements"):
+        base_score += min(5, len(tags["achievements"]) * 2)
+    market_score = min(100, base_score)
 
     return {
         "name": name,
         "job_type": job_type or (keywords[0] if keywords else "専門領域"),
         "experience": experience or "経験あり",
-        "hard_skills": hard_skills[:5],
-        "soft_skills": soft_skills[:5],
+        "hard_skills": hard_skills[:10],
+        "soft_skills": soft_skills[:8],
         "negatives": negatives,
         "market_score": market_score,
         "salary": salary,
         "location": location,
         "keywords": keywords,
         "resume_summary": info.get("職務要約", info.get("概要", "")),
+        "certifications": tags.get("certifications", []),
+        "industries": tags.get("industries", []),
+        "languages": tags.get("languages", []),
+        "management": tags.get("management", {}),
+        "experience_level": tags.get("experience_level", ""),
+        "achievements": tags.get("achievements", []),
+        "education": tags.get("education", {}),
+        "work_styles": tags.get("work_styles", []),
+        "availability": tags.get("availability", ""),
+        "career_change_reasons": tags.get("career_change_reasons", []),
     }
 
 
@@ -914,99 +956,206 @@ def _extract_search_keywords(message):
 # ============================================================
 
 def generate_candidate_profile(candidate, interview_text=None):
-    """候補者データ+面談テキストからプロト準拠のプロフィールを自動生成"""
+    """候補者データ+面談テキスト+タグ情報からプロフィールを自動生成（精度向上版）"""
     f = _get_candidate_fields(candidate)
     info = candidate.get("info", {})
     conditions = candidate.get("conditions", {})
+    tags = candidate.get("tags", {})
 
-    # --- ハードスキル抽出 ---
-    hard_skills = list(f["hard_skills"][:5])
+    # --- ハードスキル抽出（タグ情報も活用） ---
+    hard_skills = list(f["hard_skills"][:10])
     if not hard_skills:
         for k, v in info.items():
             if any(w in k for w in ["スキル", "資格", "経験", "専門", "技術"]):
                 hard_skills.extend([s.strip() for s in str(v).replace("、", ",").split(",")[:3]])
-        hard_skills = hard_skills[:5] or ["専門スキル"]
+        hard_skills = hard_skills[:10] or ["専門スキル"]
 
-    # --- ソフトスキル抽出 ---
-    soft_keywords = {
-        "論理性": ["論理", "分析", "データ", "定量"],
-        "主体性": ["主体", "自発", "積極", "自ら"],
-        "コミュニケーション力": ["コミュニケ", "対話", "折衝", "交渉"],
-        "リーダーシップ": ["リーダー", "統括", "マネジ", "管理"],
-        "協調性": ["協調", "チーム", "連携", "協力"],
-        "創造性": ["企画", "クリエイ", "アイデア", "発想"],
-        "成長意欲": ["成長", "学習", "スキルアップ", "挑戦"],
-        "粘り強さ": ["粘り", "コミット", "やり遂げ", "達成"],
-    }
-    all_text = " ".join(str(v) for v in info.values()) + " ".join(str(s) for s in candidate.get("strengths", []))
-    if interview_text:
-        all_text += " " + interview_text
-    soft_skills = [skill for skill, kws in soft_keywords.items() if any(kw in all_text for kw in kws)]
+    # --- ソフトスキル抽出（タグ情報優先） ---
+    soft_skills = list(f["soft_skills"]) if f["soft_skills"] else []
+    if not soft_skills:
+        soft_keywords = {
+            "論理性": ["論理", "分析", "データ", "定量"],
+            "主体性": ["主体", "自発", "積極", "自ら"],
+            "コミュニケーション力": ["コミュニケ", "対話", "折衝", "交渉"],
+            "リーダーシップ": ["リーダー", "統括", "マネジ", "管理"],
+            "協調性": ["協調", "チーム", "連携", "協力"],
+            "創造性": ["企画", "クリエイ", "アイデア", "発想"],
+            "成長意欲": ["成長", "学習", "スキルアップ", "挑戦"],
+            "粘り強さ": ["粘り", "コミット", "やり遂げ", "達成"],
+            "柔軟性": ["柔軟", "適応", "臨機応変"],
+            "行動力": ["行動力", "フットワーク", "スピード"],
+            "問題解決力": ["問題解決", "課題解決", "改善"],
+            "プレゼン力": ["プレゼン", "説明力", "伝える"],
+        }
+        all_text = " ".join(str(v) for v in info.values()) + " ".join(str(s) for s in candidate.get("strengths", []))
+        if interview_text:
+            all_text += " " + interview_text
+        soft_skills = [skill for skill, kws in soft_keywords.items() if any(kw in all_text for kw in kws)]
     if not soft_skills:
         soft_skills = ["コミュニケーション力"]
 
-    # --- 市場スコア & 理由 ---
+    # --- 市場スコア & 理由（精緻化） ---
     ms = f["market_score"]
     market_reasons = []
+
+    # 職種需要
     if ms >= 80:
-        market_reasons.append(f"{f['job_type']}の経験者は高い需要があり、特に専門領域までかかわれる人材は希少")
+        market_reasons.append(f"{f['job_type']}の経験者は高い需要があり、特に専門領域まで関われる人材は希少")
     elif ms >= 60:
         market_reasons.append(f"{f['job_type']}領域の需要は安定しており、即戦力として評価されやすい")
-    if len(hard_skills) >= 2:
-        market_reasons.append(f"{'・'.join(hard_skills[:2])}の複合スキルがあるため、キャリアパスの幅が広い")
+
+    # 複合スキル
+    if len(hard_skills) >= 3:
+        market_reasons.append(f"{'・'.join(hard_skills[:3])}の複合スキルがあり、市場価値が高い")
+    elif len(hard_skills) >= 2:
+        market_reasons.append(f"{'・'.join(hard_skills[:2])}の複合スキルでキャリアパスの幅が広い")
+
+    # 資格
+    if f.get("certifications"):
+        certs_str = "・".join(f["certifications"][:3])
+        market_reasons.append(f"{certs_str}の資格を保有し、専門性が客観的に証明されている")
+
+    # マネジメント経験
+    if f.get("management", {}).get("has_experience"):
+        team_size = f["management"].get("team_size", 0)
+        if team_size > 0:
+            market_reasons.append(f"{team_size}名規模のマネジメント経験があり、管理職ポジションも視野に入る")
+        else:
+            market_reasons.append("マネジメント経験があり、管理職ポジションも視野に入る")
+
+    # 語学
+    if f.get("languages"):
+        lang_str = "・".join(l["language"] for l in f["languages"][:2])
+        market_reasons.append(f"{lang_str}のスキルがあり、グローバル案件での活躍が期待できる")
+
+    # 年収
     sal_min = conditions.get("salary_min", 0)
     sal_max = conditions.get("salary_max", 0)
     if sal_min and sal_max:
-        market_reasons.append(f"給与レンジが市場相場と合致しており、複数社から内定が出る可能性が高い")
+        market_reasons.append(f"希望年収{sal_min}万〜{sal_max}万円は市場相場と合致しており、複数社から内定が出る可能性が高い")
+
     if not market_reasons:
         market_reasons = ["条件次第で高マッチが期待できる"]
 
-    # --- マッチ理由 ---
+    # --- マッチ理由（拡充） ---
     match_reasons = []
     if f["job_type"]:
-        match_reasons.append(f"{f['job_type']}領域での豊富な実務経験")
+        exp_str = f["experience"] if f["experience"] != "経験あり" else ""
+        if exp_str:
+            match_reasons.append(f"{f['job_type']}領域で{exp_str}の実務経験")
+        else:
+            match_reasons.append(f"{f['job_type']}領域での豊富な実務経験")
+
     if hard_skills and len(hard_skills) >= 2:
-        match_reasons.append(f"{'・'.join(hard_skills[:2])}のスキル")
+        match_reasons.append(f"{'・'.join(hard_skills[:3])}のスキルセット")
+
+    # 業界経験
+    if f.get("industries"):
+        ind_str = "・".join(f["industries"][:2])
+        match_reasons.append(f"{ind_str}業界での実務経験")
+
+    # 実績
+    if f.get("achievements"):
+        match_reasons.append(f"数値で示せる具体的な実績（{f['achievements'][0][:40]}）")
+
+    # マネジメント
+    if f.get("management", {}).get("has_experience"):
+        match_reasons.append("マネジメント・チーム運営の経験")
+
+    # 成長意欲等
+    all_text = " ".join(str(v) for v in info.values())
     if any(w in all_text for w in ["成長", "挑戦", "スタートアップ", "ベンチャー"]):
-        match_reasons.append("スタートアップでの成長意欲")
-    if any(w in all_text for w in ["マネジメント", "リーダー", "管理"]):
-        match_reasons.append("マネジメント経験")
+        match_reasons.append("成長環境への高い意欲")
+
     if not match_reasons:
         match_reasons = ["専門領域での実務経験", "成長意欲の高さ"]
 
-    # --- 職務要約 ---
+    # --- 職務要約（精度向上） ---
     career_summary = f["resume_summary"]
     if not career_summary:
         parts = []
-        for k in ["職歴", "経歴", "概要", "経験", "職務要約"]:
+        for k in ["職歴", "経歴", "概要", "経験", "職務要約", "職歴概要"]:
             if k in info:
                 parts.append(str(info[k]))
-        career_summary = "。".join(parts[:2]) if parts else ""
-    if not career_summary:
-        career_summary = f"{f['job_type']}領域での経験を持ち、{'・'.join(hard_skills[:3])}のスキルを活かした業務に従事。"
+        career_summary = "。".join(parts[:3]) if parts else ""
 
-    # --- 人物タイプメモ ---
+    if not career_summary:
+        # タグ情報から構築
+        summary_parts = []
+        if f["job_type"]:
+            summary_parts.append(f"{f['job_type']}領域")
+        if f["experience"] and f["experience"] != "経験あり":
+            summary_parts.append(f"{f['experience']}の経験")
+        if f.get("industries"):
+            summary_parts.append(f"{'・'.join(f['industries'][:2])}業界")
+        if hard_skills:
+            summary_parts.append(f"{'・'.join(hard_skills[:3])}のスキル")
+        if f.get("management", {}).get("has_experience"):
+            team_size = f["management"].get("team_size", 0)
+            summary_parts.append(f"{'{}名の'.format(team_size) if team_size else ''}マネジメント経験")
+
+        if summary_parts:
+            career_summary = "で".join(summary_parts[:2]) + "を持ち、" + "を活かした業務に従事。"
+            if f.get("achievements"):
+                career_summary += f"主な実績: {f['achievements'][0][:60]}"
+        else:
+            career_summary = f"{f['job_type']}領域での経験を持ち、{'・'.join(hard_skills[:3])}のスキルを活かした業務に従事。"
+
+    # --- 人物タイプメモ（精度向上） ---
     personality_parts = []
     for k, v in info.items():
         if any(w in k for w in ["人物", "印象", "性格", "特徴", "タイプ", "人柄"]):
             personality_parts.append(str(v))
     personality_memo = "。".join(personality_parts) if personality_parts else ""
-    if not personality_memo and soft_skills:
-        traits = "・".join(soft_skills[:3])
-        personality_memo = f"{traits}が特徴的なタイプ。"
 
-    # --- ネガティブチェック ---
+    if not personality_memo:
+        memo_parts = []
+        if soft_skills:
+            memo_parts.append(f"{'・'.join(soft_skills[:3])}が特徴的")
+        if f.get("experience_level"):
+            level_labels = {
+                "ジュニア": "ポテンシャル重視で成長意欲が高い",
+                "ミドル": "実務経験を積み即戦力として期待できる",
+                "シニア": "豊富な経験で専門性が高い",
+                "リード": "チームを牽引できるリーダータイプ",
+                "エグゼクティブ": "経営視点を持ったハイレベル人材",
+            }
+            level_desc = level_labels.get(f["experience_level"], "")
+            if level_desc:
+                memo_parts.append(level_desc)
+        if f.get("career_change_reasons"):
+            reasons_str = "・".join(f["career_change_reasons"][:2])
+            memo_parts.append(f"転職動機: {reasons_str}")
+        personality_memo = "。".join(memo_parts) + "。" if memo_parts else ""
+
+    # --- ネガティブチェック（拡充） ---
     negative_checks = list(f["negatives"])
 
+    # 入社時期が遠い場合
+    availability = f.get("availability", "")
+    if availability and any(w in availability for w in ["6ヶ月", "半年", "来年"]):
+        negative_checks.append(f"入社可能時期が遠い（{availability}）")
+
     return {
-        "hard_skills": hard_skills,
-        "soft_skills": soft_skills,
+        "hard_skills": hard_skills[:10],
+        "soft_skills": soft_skills[:8],
         "market_score": ms,
-        "market_reasons": market_reasons[:4],
-        "match_reasons": match_reasons[:4],
+        "market_reasons": market_reasons[:5],
+        "match_reasons": match_reasons[:5],
         "career_summary": career_summary,
         "personality_memo": personality_memo,
         "negative_checks": negative_checks,
+        # 新規フィールド
+        "certifications": f.get("certifications", []),
+        "industries": f.get("industries", []),
+        "languages": f.get("languages", []),
+        "management": f.get("management", {}),
+        "experience_level": f.get("experience_level", ""),
+        "achievements": f.get("achievements", []),
+        "education": f.get("education", {}),
+        "work_styles": f.get("work_styles", []),
+        "availability": f.get("availability", ""),
+        "career_change_reasons": f.get("career_change_reasons", []),
     }
 
 
@@ -1020,19 +1169,28 @@ MARKET_FIT_AXES = [
 
 
 def evaluate_market_fit(candidate, settings=None):
-    """5軸でMarket Fitを評価し、⭐付与を判定"""
+    """5軸でMarket Fitを評価し、⭐付与を判定（タグ情報活用版）"""
     f = _get_candidate_fields(candidate)
     ms = f["market_score"]
     required_positives = 3
 
     axes = {}
-    # 1. 市場需要
-    axes["demandFit"] = "positive" if len(f["hard_skills"]) >= 3 and ms >= 70 else ("neutral" if f["hard_skills"] else "negative")
+    # 1. 市場需要（スキル数+資格+業界経験で評価）
+    demand_score = len(f["hard_skills"]) + len(f.get("certifications", [])) + len(f.get("industries", []))
+    axes["demandFit"] = "positive" if demand_score >= 4 and ms >= 65 else ("neutral" if demand_score >= 2 else "negative")
     # 2. 条件摩擦
     sal_min = candidate.get("conditions", {}).get("salary_min", 400)
     axes["friction"] = "positive" if 300 <= sal_min <= 800 else ("neutral" if sal_min <= 1000 else "negative")
-    # 3. 意思決定スピード
-    axes["decisionReadiness"] = "positive" if ms >= 75 else ("neutral" if ms >= 60 else "negative")
+    # 3. 意思決定スピード（入社可能時期も考慮）
+    avail = f.get("availability", "")
+    if avail in ("即日", "1ヶ月後") and ms >= 70:
+        axes["decisionReadiness"] = "positive"
+    elif ms >= 75:
+        axes["decisionReadiness"] = "positive"
+    elif ms >= 60:
+        axes["decisionReadiness"] = "neutral"
+    else:
+        axes["decisionReadiness"] = "negative"
     # 4. 市場適合レンジ
     axes["marketRangeFit"] = "positive" if ms >= 70 else ("neutral" if ms >= 55 else "negative")
     # 5. リスク

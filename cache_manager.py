@@ -145,12 +145,37 @@ def _init_db(conn: sqlite3.Connection):
             detail TEXT DEFAULT '',
             created_at TEXT DEFAULT ''
         );
+
+        -- 候補者アップロードファイル管理
+        CREATE TABLE IF NOT EXISTS candidate_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id INTEGER NOT NULL,
+            filename TEXT NOT NULL DEFAULT '',
+            file_type TEXT DEFAULT '',
+            doc_type TEXT DEFAULT '',
+            file_size INTEGER DEFAULT 0,
+            extracted_text_length INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT '',
+            FOREIGN KEY (candidate_id) REFERENCES saved_candidates(id) ON DELETE CASCADE
+        );
     """)
 
     # --- マイグレーション: 既存テーブルへのカラム追加 ---
     # jobs に job_type カラム追加（contracted=契約中 / web=Web掲載中）
     try:
         conn.execute("ALTER TABLE jobs ADD COLUMN job_type TEXT DEFAULT 'web'")
+    except sqlite3.OperationalError:
+        pass  # 既に存在
+
+    # saved_candidates に tags_json カラム追加
+    try:
+        conn.execute("ALTER TABLE saved_candidates ADD COLUMN tags_json TEXT DEFAULT '{}'")
+    except sqlite3.OperationalError:
+        pass  # 既に存在
+
+    # saved_candidates に source_files_json カラム追加
+    try:
+        conn.execute("ALTER TABLE saved_candidates ADD COLUMN source_files_json TEXT DEFAULT '[]'")
     except sqlite3.OperationalError:
         pass  # 既に存在
 
@@ -379,15 +404,18 @@ def add_collection_log(keywords_used: int, jobs_found: int, jobs_saved: int,
 # 候補者管理
 # ============================================================
 
-def save_candidate(name: str, info: Dict, strengths: list, conditions: Dict) -> int:
+def save_candidate(name: str, info: Dict, strengths: list, conditions: Dict,
+                   tags: Dict = None, source_files: list = None) -> int:
     """候補者を保存し、IDを返す"""
     import json
     conn = _get_conn()
     cur = conn.execute(
-        "INSERT INTO saved_candidates (name, info_json, strengths_json, conditions_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO saved_candidates (name, info_json, strengths_json, conditions_json, tags_json, source_files_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (name, json.dumps(info, ensure_ascii=False),
          json.dumps(strengths, ensure_ascii=False),
          json.dumps(conditions, ensure_ascii=False),
+         json.dumps(tags or {}, ensure_ascii=False),
+         json.dumps(source_files or [], ensure_ascii=False),
          datetime.now().isoformat())
     )
     conn.commit()
@@ -407,12 +435,15 @@ def get_saved_candidates() -> List[Dict]:
         d["info"] = json.loads(d.pop("info_json", "{}"))
         d["strengths"] = json.loads(d.pop("strengths_json", "[]"))
         d["conditions"] = json.loads(d.pop("conditions_json", "{}"))
+        d["tags"] = json.loads(d.pop("tags_json", "{}")) if "tags_json" in d else {}
+        d["source_files"] = json.loads(d.pop("source_files_json", "[]")) if "source_files_json" in d else []
         results.append(d)
     return results
 
 
 def update_candidate(candidate_id: int, name: str = None, info: Dict = None,
-                     strengths: list = None, conditions: Dict = None):
+                     strengths: list = None, conditions: Dict = None,
+                     tags: Dict = None, source_files: list = None):
     """候補者情報を部分的に更新"""
     import json
     conn = _get_conn()
@@ -430,6 +461,12 @@ def update_candidate(candidate_id: int, name: str = None, info: Dict = None,
     if conditions is not None:
         updates.append("conditions_json = ?")
         params.append(json.dumps(conditions, ensure_ascii=False))
+    if tags is not None:
+        updates.append("tags_json = ?")
+        params.append(json.dumps(tags, ensure_ascii=False))
+    if source_files is not None:
+        updates.append("source_files_json = ?")
+        params.append(json.dumps(source_files, ensure_ascii=False))
     if not updates:
         return
     params.append(candidate_id)
@@ -448,14 +485,41 @@ def get_candidate_by_id(candidate_id: int) -> Optional[Dict]:
     d["info"] = json.loads(d.pop("info_json", "{}"))
     d["strengths"] = json.loads(d.pop("strengths_json", "[]"))
     d["conditions"] = json.loads(d.pop("conditions_json", "{}"))
+    d["tags"] = json.loads(d.pop("tags_json", "{}")) if "tags_json" in d else {}
+    d["source_files"] = json.loads(d.pop("source_files_json", "[]")) if "source_files_json" in d else []
     return d
 
 
 def delete_candidate(candidate_id: int):
     """候補者を削除"""
     conn = _get_conn()
+    conn.execute("DELETE FROM candidate_files WHERE candidate_id = ?", (candidate_id,))
     conn.execute("DELETE FROM saved_candidates WHERE id = ?", (candidate_id,))
     conn.commit()
+
+
+def save_candidate_file(candidate_id: int, filename: str, file_type: str = "",
+                        doc_type: str = "", file_size: int = 0,
+                        extracted_text_length: int = 0) -> int:
+    """候補者のアップロードファイル情報を記録"""
+    conn = _get_conn()
+    cur = conn.execute(
+        "INSERT INTO candidate_files (candidate_id, filename, file_type, doc_type, file_size, extracted_text_length, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (candidate_id, filename, file_type, doc_type, file_size, extracted_text_length,
+         datetime.now().isoformat())
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_candidate_files(candidate_id: int) -> List[Dict]:
+    """候補者のアップロードファイル一覧を取得"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM candidate_files WHERE candidate_id = ? ORDER BY created_at ASC",
+        (candidate_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ============================================================

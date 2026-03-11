@@ -23,15 +23,15 @@ from data_collector import (
 )
 from scorer import rank_jobs, generate_search_queries, score_job
 from candidate_loader import (
-    load_all_candidates, load_candidate_upload,
-    SUPPORTED_EXTENSIONS,
+    load_all_candidates, load_candidate_upload, merge_candidate_uploads,
+    extract_all_tags, SUPPORTED_EXTENSIONS, _detect_file_type,
 )
 from cache_manager import (
     save_jobs, search_jobs, get_all_jobs, get_stats, delete_old_jobs, clear_all,
     get_keywords, add_keyword, remove_keyword, get_enabled_keywords,
     add_collection_log, get_collection_logs,
     save_candidate, get_saved_candidates, delete_candidate,
-    update_candidate, get_candidate_by_id,
+    update_candidate, get_candidate_by_id, save_candidate_file, get_candidate_files,
     save_proposal, update_proposal_status, get_proposals, delete_proposal, PROPOSAL_STATUSES,
     save_interview_sheet, update_interview_sheet, get_interview_sheets, delete_interview_sheet,
     get_app_setting, set_app_setting,
@@ -548,6 +548,20 @@ def show_candidate_popup(cand):
     personality_memo = info.get("personality_memo", profile["personality_memo"])
     negative_checks = info.get("negative_checks", profile["negative_checks"])
 
+    # 拡張タグ情報
+    tags = cand.get("tags", {})
+    certifications = info.get("certifications", profile.get("certifications", tags.get("certifications", [])))
+    industries = info.get("industries", profile.get("industries", tags.get("industries", [])))
+    languages = info.get("languages", profile.get("languages", tags.get("languages", [])))
+    management = info.get("management", profile.get("management", tags.get("management", {})))
+    experience_level = info.get("experience_level", profile.get("experience_level", tags.get("experience_level", "")))
+    achievements = info.get("achievements", profile.get("achievements", tags.get("achievements", [])))
+    education = info.get("education", profile.get("education", tags.get("education", {})))
+    work_styles = info.get("work_styles", profile.get("work_styles", tags.get("work_styles", [])))
+    availability = info.get("availability", profile.get("availability", tags.get("availability", "")))
+    career_change_reasons = info.get("career_change_reasons", profile.get("career_change_reasons", tags.get("career_change_reasons", [])))
+    source_files = cand.get("source_files", [])
+
     # ===== ヘッダー =====
     st.markdown(f"### {cand.get('name', '候補者')}")
     st.caption(f"登録: {cand.get('created_at', '')[:10]}")
@@ -592,6 +606,50 @@ def show_candidate_popup(cand):
             )
             st.markdown(ss_html or "情報なし", unsafe_allow_html=True)
 
+        # 資格・業界・語学・経験レベル（新規タグセクション）
+        _has_extra_tags = any([certifications, industries, languages, experience_level, achievements])
+        if _has_extra_tags:
+            st.markdown("#### 📋 詳細プロフィール")
+            _tag_cols = st.columns(3)
+            with _tag_cols[0]:
+                if certifications:
+                    st.markdown("**📜 資格**")
+                    for c in certifications[:6]:
+                        cert_name = c if isinstance(c, str) else str(c)
+                        st.markdown(f'<span class="fit-tag" style="background:#e0f2fe;color:#0369a1;">{esc(cert_name)}</span>', unsafe_allow_html=True)
+                if experience_level:
+                    st.markdown(f"**📊 経験レベル**: `{experience_level}`")
+            with _tag_cols[1]:
+                if industries:
+                    st.markdown("**🏢 経験業界**")
+                    for ind in industries[:5]:
+                        st.markdown(f'<span class="fit-tag" style="background:#fce7f3;color:#9d174d;">{esc(ind)}</span>', unsafe_allow_html=True)
+                if education and (education.get("level") or education.get("field")):
+                    edu_parts = []
+                    if education.get("level"):
+                        edu_parts.append(education["level"])
+                    if education.get("field"):
+                        edu_parts.append(education["field"])
+                    st.markdown(f"**🎓 学歴**: {' / '.join(edu_parts)}")
+            with _tag_cols[2]:
+                if languages:
+                    st.markdown("**🌐 語学**")
+                    for lang in languages[:4]:
+                        lang_name = lang.get("language", "") if isinstance(lang, dict) else str(lang)
+                        lang_level = lang.get("level", "") if isinstance(lang, dict) else ""
+                        st.markdown(f'<span class="fit-tag" style="background:#ecfdf5;color:#065f46;">{esc(lang_name)} ({esc(lang_level)})</span>', unsafe_allow_html=True)
+                if management and isinstance(management, dict) and management.get("has_experience"):
+                    team_size = management.get("team_size", 0)
+                    mgmt_label = f"{team_size}名規模" if team_size else "あり"
+                    st.markdown(f"**👥 マネジメント**: `{mgmt_label}`")
+
+        # 実績
+        if achievements:
+            st.markdown("#### 🏆 主な実績")
+            for ach in achievements[:5]:
+                ach_text = ach if isinstance(ach, str) else str(ach)
+                st.markdown(f"• {ach_text}")
+
         # 市場決まりやすさ
         score_label = "注目" if market_score >= 75 else ("良好" if market_score >= 60 else "")
         badge_html = f' <span class="score-badge score-high">{score_label}</span>' if score_label else ""
@@ -612,9 +670,17 @@ def show_candidate_popup(cand):
         pref_parts = []
         if sal_min or sal_max:
             pref_parts.append(f"💰 {sal_min}万〜{sal_max}万円")
-        if conditions.get("remote") or any("リモート" in str(v) for v in conditions.values()):
+        if work_styles:
+            for ws in work_styles:
+                ws_icons = {"リモート": "🏠", "フレックス": "⏰", "時短": "🕐", "副業OK": "💼", "転勤なし": "📍"}
+                pref_parts.append(f"{ws_icons.get(ws, '✓')} {ws}")
+        elif conditions.get("remote") or any("リモート" in str(v) for v in conditions.values()):
             pref_parts.append("🏠 リモート希望")
         pref_parts.append(f"📍 {conditions.get('location', '未指定')}")
+        if availability:
+            pref_parts.append(f"📅 入社: {availability}")
+        if career_change_reasons:
+            pref_parts.append(f"💭 動機: {'・'.join(career_change_reasons[:2])}")
         st.markdown(" ・ ".join(pref_parts))
 
         # 職務要約
@@ -625,6 +691,12 @@ def show_candidate_popup(cand):
         st.markdown("#### 🧠 人物タイプメモ")
         edited_memo = st.text_area("人物タイプメモ", value=personality_memo or "", height=80,
                                    key=f"popup_memo_{cid}", label_visibility="collapsed")
+
+        # ソースファイル情報
+        if source_files:
+            st.caption("📎 元ファイル: " + " / ".join(
+                f"{sf.get('name', '')}" for sf in source_files if isinstance(sf, dict)
+            ))
 
     # AI応答表示
     if st.session_state.get(f"pop_ai_{cid}"):
@@ -1468,39 +1540,136 @@ elif page == "data_import":
     with dm_tabs[2]:
         st.markdown("### 候補者を登録")
         ext_list = list(SUPPORTED_EXTENSIONS.keys())
-        st.caption(f"対応形式: {', '.join(ext_list)}")
+        st.caption(f"対応形式: {', '.join(ext_list)}  |  複数ファイル同時アップロード対応（履歴書・職務経歴書・PF等）")
 
-        up_file = st.file_uploader("ファイルをアップロード", type=[e.lstrip(".") for e in ext_list], key="cm_upload")
-        if up_file:
-            file_bytes = up_file.read()
-            cand_data = load_candidate_upload(file_bytes, up_file.name)
-            if cand_data:
-                st.success("読み取り完了")
-                info = cand_data.get("info", {})
-                conds = cand_data.get("conditions", {})
-                ic1, ic2 = st.columns(2)
-                with ic1:
+        up_files = st.file_uploader(
+            "ファイルをアップロード（複数選択可）",
+            type=[e.lstrip(".") for e in ext_list],
+            key="cm_upload",
+            accept_multiple_files=True,
+        )
+        if up_files:
+            # 各ファイルを読み込み
+            parsed_files = []
+            file_metas = []
+            for uf in up_files:
+                file_bytes = uf.read()
+                file_text = ""
+                cand_data = load_candidate_upload(file_bytes, uf.name)
+                if cand_data:
+                    doc_type = _detect_file_type(uf.name, " ".join(str(v) for v in cand_data.get("info", {}).values()))
+                    cand_data["_file_type"] = doc_type
+                    parsed_files.append(cand_data)
+                    file_metas.append({
+                        "name": uf.name,
+                        "type": os.path.splitext(uf.name)[1],
+                        "doc_type": doc_type,
+                        "size": uf.size if hasattr(uf, "size") else len(file_bytes),
+                    })
+
+            if parsed_files:
+                # 複数ファイルを統合
+                merged = merge_candidate_uploads(parsed_files) if len(parsed_files) > 1 else parsed_files[0]
+                info = merged.get("info", {})
+                conds = merged.get("conditions", {})
+                tags = merged.get("tags", {})
+
+                # ファイル情報表示
+                st.success(f"{len(parsed_files)}件のファイルを読み取り完了")
+                file_labels = []
+                for fm in file_metas:
+                    file_labels.append(f"📄 {fm['name']}（{fm['doc_type']}）")
+                st.caption(" / ".join(file_labels))
+
+                # 抽出結果を表示
+                _cm_c1, _cm_c2 = st.columns(2)
+                with _cm_c1:
                     st.markdown("**基本情報**")
-                    for k, v in info.items():
+                    display_info = {k: v for k, v in info.items()
+                                    if k not in ("hard_skills", "soft_skills", "match_reasons",
+                                                 "market_score", "market_reasons", "career_summary",
+                                                 "personality_memo", "negative_checks", "certifications",
+                                                 "industries", "languages", "management", "experience_level",
+                                                 "achievements", "education", "work_styles", "availability",
+                                                 "career_change_reasons")}
+                    for k, v in list(display_info.items())[:10]:
                         st.markdown(f"- {k}: {v}")
-                with ic2:
-                    st.markdown("**キーワード**")
-                    st.markdown(", ".join(f'`{k}`' for k in conds.get("keywords", [])) or "なし")
-                save_name = st.text_input("候補者名", value=up_file.name.rsplit(".", 1)[0], key="cm_name")
+
+                with _cm_c2:
+                    st.markdown("**抽出タグ**")
+                    # スキル
+                    skills = tags.get("skills", [])
+                    if skills:
+                        st.markdown("🔧 " + ", ".join(f'`{s}`' for s in skills[:8]))
+                    # 資格
+                    certs = tags.get("certifications", [])
+                    if certs:
+                        st.markdown("📜 " + ", ".join(f'`{c}`' for c in certs[:5]))
+                    # 業界
+                    industries = tags.get("industries", [])
+                    if industries:
+                        st.markdown("🏢 " + ", ".join(f'`{i}`' for i in industries[:5]))
+                    # 語学
+                    langs = tags.get("languages", [])
+                    if langs:
+                        st.markdown("🌐 " + ", ".join(f'`{l["language"]}({l["level"]})`' for l in langs[:3]))
+                    # 経験レベル
+                    exp_level = tags.get("experience_level", "")
+                    if exp_level:
+                        st.markdown(f"📊 レベル: `{exp_level}`")
+                    # マネジメント
+                    mgmt = tags.get("management", {})
+                    if mgmt.get("has_experience"):
+                        team = mgmt.get("team_size", 0)
+                        st.markdown(f"👥 マネジメント: `{'{}名規模'.format(team) if team else 'あり'}`")
+                    # 面談タグ
+                    itags = tags.get("interview_tags", [])
+                    if itags:
+                        st.markdown("💡 " + ", ".join(f'`{t}`' for t in itags[:6]))
+                    # 実績
+                    achievements = tags.get("achievements", [])
+                    if achievements:
+                        st.markdown(f"🏆 実績: {len(achievements)}件検出")
+                    # 入社可能時期
+                    avail = tags.get("availability", "")
+                    if avail:
+                        st.markdown(f"📅 入社可能: `{avail}`")
+                    # 働き方
+                    ws = tags.get("work_styles", [])
+                    if ws:
+                        st.markdown("🏠 " + ", ".join(f'`{w}`' for w in ws))
+
+                    if not any([skills, certs, industries, langs, itags]):
+                        kw_list = conds.get("keywords", [])
+                        st.markdown(", ".join(f'`{k}`' for k in kw_list) or "なし")
+
+                save_name = st.text_input("候補者名", value=up_files[0].name.rsplit(".", 1)[0], key="cm_name")
                 if st.button("保存", type="primary", key="cm_save"):
-                    cid_new = save_candidate(save_name, info, cand_data.get("strengths", []), conds)
+                    source_files = merged.get("source_files", [{"name": f.name, "type": _detect_file_type(f.name)} for f in up_files])
+                    cid_new = save_candidate(
+                        save_name, info, merged.get("strengths", []), conds,
+                        tags=tags, source_files=source_files
+                    )
+                    # ファイル記録
+                    for fm in file_metas:
+                        save_candidate_file(cid_new, fm["name"], fm["type"], fm["doc_type"], fm.get("size", 0))
                     # 自動プロフィール充実化
-                    tmp_cand = {"name": save_name, "info": info, "strengths": cand_data.get("strengths", []),
-                                "conditions": conds, "id": cid_new}
+                    tmp_cand = {"name": save_name, "info": info, "strengths": merged.get("strengths", []),
+                                "conditions": conds, "tags": tags, "id": cid_new}
                     enriched = generate_candidate_profile(tmp_cand)
                     enriched_info = {**info}
                     for key in ["hard_skills", "soft_skills", "match_reasons", "market_score",
-                                "market_reasons", "career_summary", "personality_memo"]:
+                                "market_reasons", "career_summary", "personality_memo",
+                                "certifications", "industries", "languages", "management",
+                                "experience_level", "achievements", "education", "work_styles",
+                                "availability", "career_change_reasons"]:
                         if enriched.get(key):
                             enriched_info[key] = enriched[key]
-                    update_candidate(cid_new, info=enriched_info)
-                    st.success(f"「{save_name}」を保存し、プロフィールを自動生成しました")
+                    update_candidate(cid_new, info=enriched_info, tags=tags, source_files=source_files)
+                    st.success(f"「{save_name}」を保存し、{len(file_metas)}ファイルからプロフィールを自動生成しました")
                     st.rerun()
+            else:
+                st.warning("ファイルの読み取りに失敗しました。対応形式を確認してください。")
 
         csv_cands = load_all_candidates()
         if csv_cands:
@@ -1509,8 +1678,10 @@ elif page == "data_import":
             if st.button("CSVの候補者をすべて保存", key="cm_bulk"):
                 added = 0
                 for c in csv_cands:
+                    c_tags = c.get("tags", {})
                     save_candidate(c.get("display_name", "候補者"), c.get("info", {}),
-                                   c.get("strengths", []), c.get("conditions", {}))
+                                   c.get("strengths", []), c.get("conditions", {}),
+                                   tags=c_tags)
                     added += 1
                 st.success(f"{added}名を保存しました")
                 st.rerun()
