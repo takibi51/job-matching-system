@@ -70,6 +70,96 @@ if _jooble_key:
     set_jooble_api_key(_jooble_key)
 
 # ============================================================
+# 職域・職種プリセット（全タブ共通）
+# ============================================================
+_JOB_PRESETS = {
+    "IT・エンジニア": [
+        "フロントエンドエンジニア", "バックエンドエンジニア", "フルスタックエンジニア",
+        "インフラエンジニア", "SRE", "DevOps", "社内SE", "情報システム",
+        "データエンジニア", "データサイエンティスト", "AIエンジニア", "機械学習エンジニア",
+        "iOSエンジニア", "Androidエンジニア", "モバイルエンジニア",
+        "QAエンジニア", "テストエンジニア", "セキュリティエンジニア",
+        "Webエンジニア", "サーバーサイドエンジニア", "組み込みエンジニア",
+        "クラウドエンジニア", "ネットワークエンジニア", "DBA",
+    ],
+    "デザイン・クリエイティブ": [
+        "Webデザイナー", "UIデザイナー", "UXデザイナー", "UI/UXデザイナー",
+        "グラフィックデザイナー", "プロダクトデザイナー", "BXデザイナー",
+        "アートディレクター", "クリエイティブディレクター",
+        "動画クリエイター", "映像ディレクター", "イラストレーター",
+        "DTPデザイナー", "エディトリアルデザイナー", "3Dデザイナー",
+    ],
+    "マーケティング・広報": [
+        "Webマーケター", "デジタルマーケティング", "コンテンツマーケター",
+        "SEOコンサルタント", "広告運用", "SNSマーケター", "CRM担当",
+        "マーケティングマネージャー", "ブランドマネージャー",
+        "広報・PR", "IR", "コピーライター", "コンテンツディレクター",
+        "グロースハッカー", "プロダクトマーケティング",
+    ],
+    "営業・ビジネス": [
+        "法人営業", "個人営業", "ルート営業", "新規開拓営業",
+        "インサイドセールス", "フィールドセールス", "ソリューション営業",
+        "カスタマーサクセス", "カスタマーサポート", "テクニカルサポート",
+        "アカウントマネージャー", "セールスエンジニア",
+        "事業開発", "アライアンス", "パートナーセールス",
+    ],
+    "企画・マネジメント": [
+        "プロジェクトマネージャー", "プロダクトマネージャー",
+        "Webディレクター", "プロデューサー",
+        "事業企画", "経営企画", "商品企画", "サービス企画",
+        "新規事業", "経営戦略",
+    ],
+    "管理・コーポレート": [
+        "人事", "採用担当", "人事労務", "組織開発",
+        "経理", "財務", "管理会計", "経営管理",
+        "総務", "法務", "内部監査", "コンプライアンス",
+        "秘書", "アシスタント", "オフィスマネージャー",
+    ],
+    "コンサルティング": [
+        "ITコンサルタント", "戦略コンサルタント", "業務コンサルタント",
+        "人事コンサルタント", "組織コンサルタント", "DXコンサルタント",
+        "M&Aアドバイザー", "会計コンサルタント",
+    ],
+    "医療・ヘルスケア": [
+        "看護師", "准看護師", "保健師", "助産師",
+        "医師", "歯科医師", "薬剤師",
+        "理学療法士", "作業療法士", "言語聴覚士",
+        "臨床検査技師", "臨床工学技士", "放射線技師",
+        "管理栄養士", "介護福祉士", "社会福祉士",
+        "医療事務", "歯科衛生士", "歯科助手",
+        "ケアマネージャー", "介護職", "看護助手",
+        "柔道整復師", "鍼灸師",
+    ],
+    "教育・研修": [
+        "講師", "教員", "塾講師", "研修講師",
+        "キャリアアドバイザー", "キャリアコンサルタント",
+        "教育企画", "研修企画",
+    ],
+    "制作・ライティング": [
+        "Webライター", "編集者", "校正者", "コピーライター",
+        "テクニカルライター", "シナリオライター",
+        "カメラマン", "フォトグラファー", "翻訳者",
+    ],
+    "物流・製造": [
+        "物流管理", "倉庫管理", "SCM",
+        "生産管理", "品質管理", "品質保証",
+        "製造オペレーター", "設備保全",
+        "購買・調達", "バイヤー",
+    ],
+    "金融・不動産": [
+        "ファイナンシャルプランナー", "証券アナリスト",
+        "リスク管理", "融資審査", "資産運用",
+        "不動産営業", "不動産管理", "用地仕入",
+        "マンション管理", "プロパティマネジメント",
+    ],
+}
+
+# 全職種リスト（フラット化）
+_ALL_ROLES = []
+for _roles in _JOB_PRESETS.values():
+    _ALL_ROLES.extend(_roles)
+
+# ============================================================
 # 勤務地プルダウン選択肢
 # ============================================================
 _LOCATION_OPTIONS = [
@@ -291,6 +381,62 @@ def _translate_title(title: str) -> str:
     for en, ja in _EN_JA_TITLE:
         result = re.sub(re.escape(en), ja, result, flags=re.IGNORECASE)
     return result
+
+
+def _filter_jobs_by_category(jobs, selected_domain, selected_roles):
+    """職域・職種でフィルタ。選択なしなら全件返す"""
+    if not selected_domain or selected_domain == "すべて":
+        return jobs
+    roles = selected_roles if selected_roles else _JOB_PRESETS.get(selected_domain, [])
+    if not roles:
+        return jobs
+    filtered = []
+    for j in jobs:
+        jtext = (j.get("title", "") + " " + j.get("description", "")).lower()
+        if any(r.lower() in jtext for r in roles):
+            filtered.append(j)
+    return filtered
+
+
+# エリアグループ（scorer.pyと同じロジック）
+_LOCATION_AREA_MAP = {
+    "北海道": ["北海道", "札幌"],
+    "東京都": ["東京", "渋谷", "新宿", "港区", "千代田", "品川", "目黒", "中央区", "六本木", "丸の内", "大手町"],
+    "神奈川県": ["神奈川", "横浜", "川崎"],
+    "埼玉県": ["埼玉", "さいたま", "大宮"],
+    "千葉県": ["千葉", "船橋", "幕張"],
+    "愛知県": ["愛知", "名古屋"],
+    "大阪府": ["大阪", "梅田", "難波", "心斎橋", "堺", "豊中", "吹田"],
+    "京都府": ["京都"],
+    "兵庫県": ["兵庫", "神戸", "三宮", "西宮", "尼崎"],
+    "福岡県": ["福岡", "博多"],
+    "広島県": ["広島"],
+    "宮城県": ["宮城", "仙台"],
+    "リモート": ["リモート", "在宅", "テレワーク", "フルリモート", "remote"],
+}
+
+
+def _filter_jobs_by_locations(jobs, selected_locations):
+    """勤務地でフィルタ（OR条件）。'全国'のみ or 空ならフィルタしない"""
+    if not selected_locations or selected_locations == ["全国"]:
+        return jobs
+    locs = [l for l in selected_locations if l != "全国"]
+    if not locs:
+        return jobs
+    # 検索用キーワードリストを構築
+    search_terms = []
+    for loc in locs:
+        search_terms.append(loc.replace("県", "").replace("府", "").replace("都", ""))
+        for kw in _LOCATION_AREA_MAP.get(loc, []):
+            search_terms.append(kw)
+    search_terms = list(set(search_terms))
+
+    filtered = []
+    for j in jobs:
+        jloc = j.get("location", "") + " " + j.get("title", "") + " " + j.get("description", "")
+        if any(t in jloc for t in search_terms):
+            filtered.append(j)
+    return filtered
 
 
 def _build_matching_excel(candidate, conditions, ranked_jobs):
@@ -1150,21 +1296,23 @@ if page == "candidate_search":
             show_candidate_popup(active_cand)
 
         with st.expander("⚙️ 検索条件を調整", expanded=False):
-            ac1, ac2, ac3, ac4 = st.columns(4)
+            ac1, ac2, ac3 = st.columns(3)
             salary_min = ac1.number_input("最低年収(万)", value=conditions.get("salary_min", 300), step=10, key="cs_smin")
             salary_max = ac2.number_input("最高年収(万)", value=conditions.get("salary_max", 600), step=10, key="cs_smax")
             age_val = ac3.number_input("年齢", value=max(conditions.get("age", 30), 18), min_value=18, max_value=70, key="cs_age")
             _loc_default = conditions.get("location", "全国")
-            _loc_idx = _LOCATION_OPTIONS.index(_loc_default) if _loc_default in _LOCATION_OPTIONS else 0
-            loc_val = ac4.selectbox("勤務地", _LOCATION_OPTIONS, index=_loc_idx, key="cs_loc")
+            _loc_defaults = [_loc_default] if _loc_default and _loc_default != "全国" else []
+            loc_vals = st.multiselect("勤務地（複数選択可・OR条件）", _LOCATION_OPTIONS, default=_loc_defaults, key="cs_loc")
             kw_str = st.text_area("キーワード（改行区切り）",
                                   value="\n".join(conditions.get("keywords", [])), height=60, key="cs_kw")
             kws = [k.strip() for k in kw_str.split("\n") if k.strip()]
+            loc_val = loc_vals[0] if len(loc_vals) == 1 else ("全国" if not loc_vals else loc_vals[0])
             conditions = {
                 "keywords": kws, "location": loc_val,
                 "salary_min": salary_min, "salary_max": salary_max,
                 "age": age_val, "prefer_kansai": True,
                 "extra_keywords": conditions.get("extra_keywords", []),
+                "_locations": loc_vals,  # 複数勤務地（内部用）
             }
 
         st.markdown("---")
@@ -1176,13 +1324,20 @@ if page == "candidate_search":
             # AIトリガーの検索結果
             _render_ai_search_results("candidateSearch")
 
-            # 求人種別フィルタ
-            jt_filter = st.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key="cs_jt")
+            # フィルタ行: 求人種別 + 職域 + 職種
+            _cf1, _cf2 = st.columns(2)
+            jt_filter = _cf1.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key="cs_jt")
             jt_val = None
             if "契約中" in jt_filter:
                 jt_val = "contracted"
             elif "Web" in jt_filter:
                 jt_val = "web"
+
+            _cf3, _cf4 = st.columns(2)
+            cs_domain = _cf3.selectbox("職域で絞り込み", ["すべて"] + list(_JOB_PRESETS.keys()), key="cs_domain")
+            cs_roles = []
+            if cs_domain != "すべて":
+                cs_roles = _cf4.multiselect("職種で絞り込み", _JOB_PRESETS.get(cs_domain, []), key="cs_roles")
 
             if stats["total_jobs"] == 0:
                 st.markdown('<div class="empty-state"><h3>求人データがまだありません</h3>'
@@ -1193,6 +1348,10 @@ if page == "candidate_search":
                 matched_jobs = search_jobs(search_query) if search_query.strip() else get_all_jobs(limit=300, job_type=jt_val)
                 if jt_val and matched_jobs:
                     matched_jobs = [j for j in matched_jobs if j.get("job_type", "web") == jt_val]
+                # 職域・職種フィルタ
+                matched_jobs = _filter_jobs_by_category(matched_jobs, cs_domain, cs_roles)
+                # 勤務地フィルタ（複数選択OR条件）
+                matched_jobs = _filter_jobs_by_locations(matched_jobs, conditions.get("_locations", []))
 
                 if matched_jobs:
                     ranked = rank_jobs(matched_jobs, conditions)
@@ -1302,20 +1461,34 @@ elif page == "job_search":
     st.markdown("## 📋 求人検索")
     st.caption("求人にマッチする候補者を探します")
 
-    js_jt = st.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key="js_jt_filter")
+    # フィルタ行
+    _jf1, _jf2 = st.columns(2)
+    js_jt = _jf1.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key="js_jt_filter")
     js_jt_val = None
     if "契約中" in js_jt:
         js_jt_val = "contracted"
     elif "Web" in js_jt:
         js_jt_val = "web"
 
+    _jf3, _jf4 = st.columns(2)
+    js_domain = _jf3.selectbox("職域で絞り込み", ["すべて"] + list(_JOB_PRESETS.keys()), key="js_domain")
+    js_roles = []
+    if js_domain != "すべて":
+        js_roles = _jf4.multiselect("職種で絞り込み", _JOB_PRESETS.get(js_domain, []), key="js_roles")
+
+    js_locs = st.multiselect("勤務地で絞り込み（複数選択可・OR条件）", _LOCATION_OPTIONS, default=[], key="js_locs")
+
     job_search_kw = st.text_input("求人を検索", placeholder="職種・企業名・キーワード", key="js_kw")
     if job_search_kw.strip():
         job_results = search_jobs(job_search_kw)
     else:
-        job_results = get_all_jobs(limit=100, job_type=js_jt_val)
+        job_results = get_all_jobs(limit=300, job_type=js_jt_val)
     if js_jt_val and job_results:
         job_results = [j for j in job_results if j.get("job_type", "web") == js_jt_val]
+    # 職域・職種フィルタ
+    job_results = _filter_jobs_by_category(job_results, js_domain, js_roles)
+    # 勤務地フィルタ（複数選択OR条件）
+    job_results = _filter_jobs_by_locations(job_results, js_locs)
 
     selected_job_for_chat = None
 
@@ -1327,7 +1500,7 @@ elif page == "job_search":
         _render_ai_search_results("jobSearch")
 
         if not job_results:
-            st.markdown('<div class="empty-state"><h3>求人がありません</h3></div>', unsafe_allow_html=True)
+            st.markdown('<div class="empty-state"><h3>条件に一致する求人がありません</h3></div>', unsafe_allow_html=True)
         elif not saved_cands:
             st.markdown('<div class="empty-state"><h3>候補者が登録されていません</h3></div>', unsafe_allow_html=True)
         else:
@@ -1772,88 +1945,7 @@ elif page == "data_import":
         if registered_kws:
             st.markdown("**有効キーワード:** " + ", ".join([f"「{kw['keyword']}」" for kw in registered_kws[:10]]))
 
-        # 職域×職種のプリセット辞書
-        _JOB_PRESETS = {
-            "IT・エンジニア": [
-                "フロントエンドエンジニア", "バックエンドエンジニア", "フルスタックエンジニア",
-                "インフラエンジニア", "SRE", "DevOps", "社内SE", "情報システム",
-                "データエンジニア", "データサイエンティスト", "AIエンジニア", "機械学習エンジニア",
-                "iOSエンジニア", "Androidエンジニア", "モバイルエンジニア",
-                "QAエンジニア", "テストエンジニア", "セキュリティエンジニア",
-                "Webエンジニア", "サーバーサイドエンジニア", "組み込みエンジニア",
-                "クラウドエンジニア", "ネットワークエンジニア", "DBA",
-            ],
-            "デザイン・クリエイティブ": [
-                "Webデザイナー", "UIデザイナー", "UXデザイナー", "UI/UXデザイナー",
-                "グラフィックデザイナー", "プロダクトデザイナー", "BXデザイナー",
-                "アートディレクター", "クリエイティブディレクター",
-                "動画クリエイター", "映像ディレクター", "イラストレーター",
-                "DTPデザイナー", "エディトリアルデザイナー", "3Dデザイナー",
-            ],
-            "マーケティング・広報": [
-                "Webマーケター", "デジタルマーケティング", "コンテンツマーケター",
-                "SEOコンサルタント", "広告運用", "SNSマーケター", "CRM担当",
-                "マーケティングマネージャー", "ブランドマネージャー",
-                "広報・PR", "IR", "コピーライター", "コンテンツディレクター",
-                "グロースハッカー", "プロダクトマーケティング",
-            ],
-            "営業・ビジネス": [
-                "法人営業", "個人営業", "ルート営業", "新規開拓営業",
-                "インサイドセールス", "フィールドセールス", "ソリューション営業",
-                "カスタマーサクセス", "カスタマーサポート", "テクニカルサポート",
-                "アカウントマネージャー", "セールスエンジニア",
-                "事業開発", "アライアンス", "パートナーセールス",
-            ],
-            "企画・マネジメント": [
-                "プロジェクトマネージャー", "プロダクトマネージャー",
-                "Webディレクター", "プロデューサー",
-                "事業企画", "経営企画", "商品企画", "サービス企画",
-                "新規事業", "経営戦略",
-            ],
-            "管理・コーポレート": [
-                "人事", "採用担当", "人事労務", "組織開発",
-                "経理", "財務", "管理会計", "経営管理",
-                "総務", "法務", "内部監査", "コンプライアンス",
-                "秘書", "アシスタント", "オフィスマネージャー",
-            ],
-            "コンサルティング": [
-                "ITコンサルタント", "戦略コンサルタント", "業務コンサルタント",
-                "人事コンサルタント", "組織コンサルタント", "DXコンサルタント",
-                "M&Aアドバイザー", "会計コンサルタント",
-            ],
-            "医療・ヘルスケア": [
-                "看護師", "准看護師", "保健師", "助産師",
-                "医師", "歯科医師", "薬剤師",
-                "理学療法士", "作業療法士", "言語聴覚士",
-                "臨床検査技師", "臨床工学技士", "放射線技師",
-                "管理栄養士", "介護福祉士", "社会福祉士",
-                "医療事務", "歯科衛生士", "歯科助手",
-                "ケアマネージャー", "介護職", "看護助手",
-                "柔道整復師", "鍼灸師",
-            ],
-            "教育・研修": [
-                "講師", "教員", "塾講師", "研修講師",
-                "キャリアアドバイザー", "キャリアコンサルタント",
-                "教育企画", "研修企画",
-            ],
-            "制作・ライティング": [
-                "Webライター", "編集者", "校正者", "コピーライター",
-                "テクニカルライター", "シナリオライター",
-                "カメラマン", "フォトグラファー", "翻訳者",
-            ],
-            "物流・製造": [
-                "物流管理", "倉庫管理", "SCM",
-                "生産管理", "品質管理", "品質保証",
-                "製造オペレーター", "設備保全",
-                "購買・調達", "バイヤー",
-            ],
-            "金融・不動産": [
-                "ファイナンシャルプランナー", "証券アナリスト",
-                "リスク管理", "融資審査", "資産運用",
-                "不動産営業", "不動産管理", "用地仕入",
-                "マンション管理", "プロパティマネジメント",
-            ],
-        }
+        # 職域×職種のプリセット辞書（グローバル定義を使用）
 
         with st.expander("🔑 キーワード管理", expanded=True):
             kw_tab1, kw_tab2 = st.tabs(["📝 手動追加", "👤 候補者から追加"])
@@ -2072,8 +2164,8 @@ elif page == "data_import":
                     remove_keyword(kw["id"])
                     st.rerun()
 
-        fetch_loc_sel = st.selectbox("取得勤務地", _LOCATION_OPTIONS, index=0, key="dm_fetch_loc")
-        fetch_loc = "" if fetch_loc_sel == "全国" else fetch_loc_sel
+        fetch_loc_sels = st.multiselect("取得勤務地（複数選択可・OR条件）", _LOCATION_OPTIONS, default=["全国"], key="dm_fetch_loc")
+        fetch_loc = "" if (not fetch_loc_sels or "全国" in fetch_loc_sels) else fetch_loc_sels[0]
 
         # 自動更新状態の表示
         if _last_auto:
