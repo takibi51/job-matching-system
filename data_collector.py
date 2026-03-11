@@ -267,7 +267,7 @@ def fetch_jooble(keyword: str, location: str = "", max_pages: int = 3) -> List[D
         try:
             payload = {
                 "keywords": keyword,
-                "location": location or "",
+                "location": location or "日本",
                 "page": page,
             }
 

@@ -149,10 +149,13 @@ def run_fetch_sync(kw_list, location, sources, status_container=None):
         add_collection_log(len(kw_list), 0, 0, ",".join(sources), elapsed)
         result_msg = "⚠️ 取得0件でした（データ管理タブの取得ログを確認してください）"
 
-    # キーワードごとのDB件数を更新
+    # キーワードごとのDB件数を更新（実際の保存件数を渡す）
+    _saved_count = saved if all_jobs else 0
     for kw in kw_list:
         try:
-            update_keyword_status(kw, "done")
+            # 複数キーワードの場合は均等割り（1キーワードなら全件数）
+            _kw_count = _saved_count if len(kw_list) == 1 else 0
+            update_keyword_status(kw, "done", jobs_found=_kw_count)
         except Exception:
             pass
 

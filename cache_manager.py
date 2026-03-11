@@ -426,11 +426,15 @@ def update_keyword_status(keyword: str, status: str, jobs_found: int = 0):
     """キーワードの取得状態を更新（pending/fetching/done/error）"""
     conn = _get_conn()
     if status == "done":
-        # 実際のDB件数をカウント（キーワードがタイトル・説明に含まれる求人数）
-        actual_count = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE title LIKE ? OR description LIKE ?",
-            (f"%{keyword}%", f"%{keyword}%")
-        ).fetchone()[0]
+        if jobs_found > 0:
+            # 呼び出し元から件数が渡された場合はそれを使用
+            actual_count = jobs_found
+        else:
+            # DB件数をカウント（キーワードがタイトル・説明に含まれる求人数）
+            actual_count = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE title LIKE ? OR description LIKE ?",
+                (f"%{keyword}%", f"%{keyword}%")
+            ).fetchone()[0]
         conn.execute(
             "UPDATE collection_keywords SET fetch_status = ?, jobs_found = ?, last_fetched_at = ? WHERE keyword = ?",
             (status, str(actual_count), _now().isoformat(), keyword)
