@@ -14,6 +14,7 @@ import os
 import re
 import glob
 import io
+import unicodedata
 from typing import List, Dict, Optional, Tuple
 
 CSV_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -633,7 +634,8 @@ def _extract_career_summary(text: str) -> str:
         return timeline[:800]
 
     # CV中の「会社名 年月〜年月」パターンから抽出
-    _SKIP_NAMES = {"期間", "業務内容", "項目", "内容", "年月", "備考"}
+    _SKIP_WORDS = {"期間", "業務内容", "項目", "内容", "年月", "備考", "使用ツール", "概要",
+                   "営業", "管理", "企画", "開発", "エリア", "担当", "マネージャー"}
     cv_company_pattern = re.compile(
         r'((?:株式会社|有限会社|合同会社|医療法人)?[^\n]{2,25}'
         r'(?:株式会社|有限会社|合同会社)?)'
@@ -643,8 +645,12 @@ def _extract_career_summary(text: str) -> str:
     for m in cv_company_pattern.finditer(text):
         company = m.group(1).strip()
         company = re.sub(r'（[^）]*）', '', company).strip()
-        if company and len(company) >= 2 and company not in _SKIP_NAMES:
-            cv_entries.append(f"{company} ({m.group(2)}年{m.group(3)}月〜)")
+        # テーブルヘッダー等のスキップ（部分一致）
+        if not company or len(company) < 2:
+            continue
+        if any(sw in company for sw in _SKIP_WORDS):
+            continue
+        cv_entries.append(f"{company} ({m.group(2)}年{m.group(3)}月〜)")
     if cv_entries:
         timeline = " → ".join(dict.fromkeys(cv_entries).keys())
         return timeline[:800]
@@ -749,6 +755,56 @@ def _extract_self_pr(text: str) -> str:
             return content[:800]
 
     return ""
+
+
+def _extract_career_highlights(text: str) -> str:
+    """職務経歴の成果・活かせる経験・業務実績から人物面の補足情報を抽出"""
+    highlights = []
+    seen = set()
+
+    # 1. 「活かせる経験、知識」「活かせるスキル」セクション
+    exp_headers = [
+        r'■\s*活かせる経験[、,]?\s*(?:知識|スキル)?',
+        r'■\s*活かせるスキル',
+        r'■\s*スキル・経験',
+    ]
+    for header_pat in exp_headers:
+        m = re.search(header_pat + r'[：:\s]*\n?([\s\S]*?)(?=\n\s*■)', text)
+        if m:
+            content = m.group(1).strip()
+            if content and len(content) > 20 and content not in seen:
+                highlights.append(content[:400])
+                seen.add(content)
+            break
+
+    # 2. 【成果】セクションから実績を収集
+    achievement_patterns = [
+        r'【成果】\s*\n?((?:[-・]\s*.+\n?)+)',
+        r'【実績】\s*\n?((?:[-・]\s*.+\n?)+)',
+    ]
+    for pat in achievement_patterns:
+        for m in re.finditer(pat, text):
+            content = m.group(1).strip()
+            if content and content not in seen:
+                highlights.append(content[:200])
+                seen.add(content)
+
+    # 3. 【活かしたスキル】から人物特性の記述を収集
+    skill_sections = re.finditer(
+        r'【活かした(?:スキル|経験[・]?スキル)】\s*\n?((?:[-・]\s*.+\n?)+)', text
+    )
+    for m in skill_sections:
+        content = m.group(1).strip()
+        # 長い説明文がある行のみ（人物面の記述）
+        for line in content.split("\n"):
+            line = re.sub(r'^[-・]\s*', '', line).strip()
+            if len(line) > 30 and line not in seen:
+                highlights.append(line[:200])
+                seen.add(line)
+
+    if not highlights:
+        return ""
+    return "\n".join(highlights)[:600]
 
 
 def _extract_tools_from_text(text: str) -> List[str]:
@@ -1316,11 +1372,22 @@ def load_candidate_text(text: str, filename: str = "テキスト入力") -> Opti
         if career_summary_val:
             candidate["info"]["経歴略歴"] = career_summary_val
 
-    # 人物要約（自己PR）
+    # 人物要約（自己PR + 職務経歴の成果・業務内容から補完）
     if "人物要約" not in candidate["info"]:
         self_pr_val = _extract_self_pr(cleaned)
         if self_pr_val:
             candidate["info"]["人物要約"] = self_pr_val
+
+    # 人物要約が300字未満の場合、職務経歴の成果・業務実績で補完
+    current_pr = candidate["info"].get("人物要約", "")
+    if len(current_pr) < 300:
+        supplements = _extract_career_highlights(cleaned)
+        if supplements:
+            if current_pr:
+                combined = current_pr + "\n" + supplements
+            else:
+                combined = supplements
+            candidate["info"]["人物要約"] = combined[:800]
 
     # 使用ツール抽出（タグに追加）
     tools_from_text = _extract_tools_from_text(cleaned)
@@ -1336,6 +1403,11 @@ def load_candidate_text(text: str, filename: str = "テキスト入力") -> Opti
                 existing_skills.add(tool)
 
     candidate["tags"] = tags
+
+    # candidateトップレベルの keywords/extra_keywords にもタグから反映
+    candidate["keywords"] = list(tags.get("skills", []))
+    candidate["extra_keywords"] = list(tags.get("industries", []))
+
     candidate["conditions"] = _build_conditions(
         candidate["info"], candidate["strengths"], cleaned, tags
     )
@@ -1390,6 +1462,9 @@ def load_candidate_pdf(filepath_or_bytes, filename: str = "PDF") -> Optional[Dic
     if not full_text.strip():
         return None
 
+    # CJK互換文字等を正規化（⾃⼰→自己 等）
+    full_text = unicodedata.normalize("NFKC", full_text)
+
     return load_candidate_text(full_text, filename)
 
 
@@ -1419,6 +1494,7 @@ def load_candidate_image(filepath_or_bytes, filename: str = "画像") -> Optiona
     if not text or not text.strip():
         return None
 
+    text = unicodedata.normalize("NFKC", text)
     return load_candidate_text(text, filename)
 
 
