@@ -1490,17 +1490,21 @@ if page == "candidate_search":
         conditions = _cand_to_conditions(active_cand)
 
     # --- 候補者変更の検知: 前回と異なる候補者が選択されたら検索結果と条件を完全リセット ---
-    _current_cand_id = active_cand.get("id", active_cand.get("name", "")) if active_cand else ""
-    if st.session_state.get("_cs_prev_cand_id") != _current_cand_id:
+    _current_cand_id = str(active_cand.get("id", active_cand.get("name", ""))) if active_cand else ""
+    _prev_cand_id = st.session_state.get("_cs_prev_cand_id", "")
+    if _current_cand_id and _prev_cand_id and _prev_cand_id != _current_cand_id:
+        # 候補者が実際に切り替わった場合のみリセット
         st.session_state["_cs_prev_cand_id"] = _current_cand_id
         st.session_state.pop("_cs_search_done", None)
-        # 検索条件ウィジェットの古い値を完全クリア
         for _wk in ["cs_smin", "cs_smax", "cs_age", "cs_loc", "cs_kw",
                      "cs_jt", "cs_domain", "cs_roles", "cs_locs_filter", "cs_exclude",
                      "cs_fscore", "cs_sort", "cs_fsal"]:
             st.session_state.pop(_wk, None)
         # 強制リロードで古いウィジェット値を完全に破棄
         st.rerun()
+    # 初回選択時はIDを記録（rerunしない）
+    if _current_cand_id and not _prev_cand_id:
+        st.session_state["_cs_prev_cand_id"] = _current_cand_id
 
     if active_cand and conditions:
         mf_active = evaluate_market_fit(active_cand)
