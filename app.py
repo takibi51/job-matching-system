@@ -1020,9 +1020,14 @@ def _render_ai_search_results(tab_key):
 # ============================================================
 @st.dialog("👤 候補者詳細", width="large")
 def show_candidate_popup(cand):
+    cid = cand.get("id", 0)
+    # DB保存後に最新データを反映するため、IDがあればDBから再取得
+    if cid:
+        fresh = get_candidate_by_id(cid)
+        if fresh:
+            cand = fresh
     info = cand.get("info", {})
     conditions = cand.get("conditions", {})
-    cid = cand.get("id", 0)
 
     # プロフィール自動生成（保存済みデータ優先）
     profile = generate_candidate_profile(cand)

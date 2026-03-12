@@ -148,6 +148,11 @@ _SKILL_KEYWORDS = [
     "イベント企画", "展覧会",
     "商品企画", "販売促進", "広告出稿",
     "テレアポ", "DX", "賃貸管理", "仲介",
+    # 事務・アシスタント
+    "事務", "一般事務", "営業事務", "経理事務", "総務事務", "人事事務",
+    "貿易事務", "秘書", "アシスタント", "庶務", "受付",
+    "データ入力", "請求処理", "請求書作成", "資料作成",
+    "電話対応", "来客対応", "備品管理",
     # 管理
     "マネジメント", "チームリーダー", "管理職", "事業部長", "部長",
     "人事", "採用", "総務", "経理", "労務", "法務", "財務", "経営管理",
@@ -342,7 +347,7 @@ _GENERIC_TOOLS = {
 _GENERIC_INDUSTRY_WORDS = {
     "IT", "Web", "EC", "BtoB", "BtoC", "SaaS",
     "製造", "メーカー", "商社", "小売", "飲食", "物流",
-    "建設", "人材", "広告代理店", "コンサル",
+    "建設", "人材", "広告代理店",
     "医療", "ヘルスケア", "不動産", "金融", "教育",
 }
 
@@ -632,8 +637,8 @@ def _extract_age(text: str) -> int:
     m = re.search(r'(?:年齢|Age)[：:\s]*(\d{1,2})歳?', text)
     if m:
         return int(m.group(1))
-    # 「満50歳」「満 50 歳」パターン
-    m = re.search(r'満\s*(\d+)\s*歳', text)
+    # 「満50歳」「満 50 歳」「満 42 才」パターン
+    m = re.search(r'満\s*(\d+)\s*[歳才]', text)
     if m:
         age = int(m.group(1))
         if 18 <= age <= 70:
@@ -651,8 +656,8 @@ def _extract_age(text: str) -> int:
             age -= 1
         if 18 <= age <= 70:
             return age
-    # 「30歳」パターン（一般的な記載）
-    m = re.search(r'(\d{2})歳', text)
+    # 「30歳」「30才」パターン（一般的な記載）
+    m = re.search(r'(\d{2})[歳才]', text)
     if m:
         age = int(m.group(1))
         if 18 <= age <= 70:
@@ -662,19 +667,65 @@ def _extract_age(text: str) -> int:
 
 def _extract_gender(text: str) -> str:
     """テキストから性別を抽出"""
+    # 「男性」「女性」の明示的な記載
+    m = re.search(r'(?:^|[\s　])([男女]性)(?:[\s　\n]|$)', text, re.MULTILINE)
+    if m:
+        return m.group(1)
+
     # 「性別：女」「性別: 男」パターン
     m = re.search(r'性別[：:\s]*([男女])', text)
     if m:
         return m.group(1) + "性"
-    # テキスト中の単独の「男」「女」（性別文脈で出現するもの）
-    # 「日生（満50歳）」の近くや履歴書の基本情報欄にある性別表記
-    m = re.search(r'歳\s*[）\)]\s*([男女])\b', text)
+
+    # チェックボックス形式「男 女」対応 — ○や●等のマーク付き
+    # 「○女」「●男」のようなパターン
+    m = re.search(r'[○●◯☑✓]\s*([男女])', text)
     if m:
         return m.group(1) + "性"
-    # 行頭や区切り文字の後に単独で出現する「男」「女」
-    m = re.search(r'(?:^|[\s　\t])\s*([男女])\s*(?:$|[\s　\t\n])', text, re.MULTILINE)
-    if m:
-        return m.group(1) + "性"
+
+    # 「男 ・ 女」「男 / 女」のようなチェックボックス形式はスキップ
+    # （どちらにチェックが入っているか判別できない）
+    checkbox_pattern = re.search(r'男\s*[・/／]\s*女|男\s+女', text)
+
+    # 「歳）男」「歳) 女」パターン（チェックボックス形式でない場合のみ）
+    if not checkbox_pattern:
+        m = re.search(r'歳\s*[）\)]\s*([男女])\b', text)
+        if m:
+            return m.group(1) + "性"
+
+    # 名前から性別を推定（「○○子」「○○奈」「○○美」等は女性名の可能性が高い）
+    # 履歴書の名前パターン
+    name_m = re.search(
+        r'(?:氏名|名前|ふりがな)[：:\s]*[^\n]*\n?\s*([^\n]{2,10})',
+        text
+    )
+    if not name_m:
+        # ファイル名に名前が含まれるケースは呼び出し側で対応
+        pass
+
+    # チェックボックス形式以外で行頭に単独出現する「男」「女」
+    if not checkbox_pattern:
+        m = re.search(r'(?:^|[\s　\t])\s*([男女])\s*(?:$|[\s　\t\n])', text, re.MULTILINE)
+        if m:
+            return m.group(1) + "性"
+
+    return ""
+
+
+def _guess_gender_from_name(text: str) -> str:
+    """名前から性別を推定（女性名のパターンマッチ）"""
+    # 女性名に多い末尾パターン
+    female_endings = [
+        "子", "美", "奈", "菜", "那", "花", "華", "香",
+        "織", "恵", "絵", "江", "代", "世", "乃",
+        "穂", "帆", "歩", "実", "海", "愛", "結",
+        "里", "莉", "梨", "理", "璃",
+    ]
+    # ファイル名や本文から日本語の名前を探す
+    name_patterns = re.findall(r'[一-龥ぁ-んァ-ヶ]{1,4}[　 ]+([一-龥ぁ-んァ-ヶ]{1,5})', text)
+    for name in name_patterns:
+        if any(name.endswith(e) for e in female_endings):
+            return "女性"
     return ""
 
 
@@ -1468,6 +1519,9 @@ def load_candidate_text(text: str, filename: str = "テキスト入力") -> Opti
     # 性別
     if "性別" not in candidate["info"]:
         gender_val = _extract_gender(cleaned)
+        if not gender_val:
+            # ファイル名や本文中の名前から女性名パターンで推定
+            gender_val = _guess_gender_from_name(filename + " " + cleaned[:200])
         if gender_val:
             candidate["info"]["性別"] = gender_val
 
