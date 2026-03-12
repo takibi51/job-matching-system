@@ -330,13 +330,27 @@ _EXPERIENCE_LEVEL_MAP = {
 }
 
 
+# 汎用コミュニケーションツール（誰でも使うのでマッチングに不向き）
+_GENERIC_TOOLS = {
+    "Slack", "ChatWork", "Microsoft Teams", "Zoom", "Google Meet",
+    "LINE", "Skype", "Discord",
+    "Excel", "Word", "PowerPoint", "Google Docs", "Google Sheets",
+    "Gmail", "Outlook",
+}
+
+# 汎用すぎる業界・業種キーワード（単体では活躍可能性を示さない）
+_GENERIC_INDUSTRY_WORDS = {
+    "IT", "Web", "EC", "BtoB", "BtoC", "SaaS",
+    "製造", "メーカー", "商社", "小売", "飲食", "物流",
+    "建設", "人材", "広告代理店", "コンサル",
+    "医療", "ヘルスケア", "不動産", "金融", "教育",
+}
+
+
 def _extract_keywords_from_text(text: str) -> List[str]:
     """テキストからマッチング用キーワードを抽出"""
     found = []
     text_lower = text.lower()
-
-    # 短いキーワード（3文字以下の英字）は単語境界でマッチさせる
-    _SHORT_WORD_BOUNDARY = re.compile(r'(?<![a-zA-Z]){kw}(?![a-zA-Z])')
 
     # 長いキーワードから先にマッチさせる（部分一致の誤検出防止）
     sorted_keywords = sorted(_SKILL_KEYWORDS, key=len, reverse=True)
@@ -364,6 +378,75 @@ def _extract_keywords_from_text(text: str) -> List[str]:
                     matched_positions.update(kw_range)
 
     return list(dict.fromkeys(found))  # 重複除去・順序保持
+
+
+def _score_and_filter_keywords(all_keywords: List[str], full_text: str) -> List[str]:
+    """
+    キーワードに関連性スコアを付け、コアスキルを優先・汎用キーワードを除外する。
+
+    スコアリングロジック:
+    - コアセクション（自己PR・職務要約・活かせる経験）に出現 → +3点
+    - テキスト全体での出現回数 ×1点
+    - 汎用ツール（Slack/Teams等）→ 除外
+    - 汎用業界ワード（IT/Web等）→ 除外（extra_keywords側で使う）
+    - スコア2点以上のキーワードのみ残す（ただし最低10件は保持）
+    """
+    if not all_keywords:
+        return []
+
+    text_lower = full_text.lower()
+
+    # コアセクション（自己PR・職務要約・活かせる経験）を抽出
+    core_sections = []
+    core_patterns = [
+        r'■\s*自己\s*PR[：:\s]*\n?([\s\S]*?)(?=\n\s*■|$)',
+        r'■\s*職務経歴要約[：:\s]*\n?([\s\S]*?)(?=\n\s*■)',
+        r'■\s*職務要約[：:\s]*\n?([\s\S]*?)(?=\n\s*■)',
+        r'■\s*活かせる経験[^\n]*\n?([\s\S]*?)(?=\n\s*■)',
+        r'■\s*スキル[^\n]*\n?([\s\S]*?)(?=\n\s*■)',
+        r'【活かしたスキル】[：:\s]*\n?([\s\S]*?)(?=\n\s*【|\n\s*■)',
+        r'【活かした経験[^\n]*】[：:\s]*\n?([\s\S]*?)(?=\n\s*【|\n\s*■)',
+        r'【成果】[：:\s]*\n?([\s\S]*?)(?=\n\s*【|\n\s*■)',
+        r'【業務内容】[：:\s]*\n?([\s\S]*?)(?=\n\s*【|\n\s*■)',
+        r'【担当業務】[：:\s]*\n?([\s\S]*?)(?=\n\s*【|\n\s*■)',
+        r'【担当商材】[：:\s]*\n?([\s\S]*?)(?=\n\s*【|\n\s*■)',
+    ]
+    for pat in core_patterns:
+        for m in re.finditer(pat, full_text):
+            core_sections.append(m.group(1))
+    core_text = "\n".join(core_sections).lower()
+
+    scored = {}
+    for kw in all_keywords:
+        # 汎用ツールは除外
+        if kw in _GENERIC_TOOLS:
+            continue
+        # 汎用業界ワードは除外（業界タグ側で扱う）
+        if kw in _GENERIC_INDUSTRY_WORDS:
+            continue
+
+        kw_lower = kw.lower()
+        score = 0
+
+        # コアセクションに出現 → +3
+        if kw_lower in core_text:
+            score += 3
+
+        # テキスト全体での出現回数
+        count = text_lower.count(kw_lower)
+        score += min(count, 5)  # 最大5点まで
+
+        scored[kw] = score
+
+    # スコア順にソート
+    sorted_kws = sorted(scored.keys(), key=lambda k: scored[k], reverse=True)
+
+    # スコア2点以上を採用（ただし最低10件は保持）
+    filtered = [kw for kw in sorted_kws if scored[kw] >= 2]
+    if len(filtered) < 10:
+        filtered = sorted_kws[:max(10, len(sorted_kws))]
+
+    return filtered
 
 
 def _extract_certifications(text: str) -> List[str]:
@@ -818,30 +901,47 @@ def _extract_tools_from_text(text: str) -> List[str]:
         r'使用ソフト[：:\s]*',
         r'開発環境[：:\s]*',
     ]
+    # 既知のツール名リスト（これに含まれるものだけを抽出）
+    _KNOWN_TOOLS = {
+        # デザイン
+        "Figma", "Illustrator", "Photoshop", "XD", "Sketch", "InDesign",
+        "After Effects", "Premiere Pro", "Canva", "CLIP STUDIO",
+        # プロジェクト管理
+        "Backlog", "Notion", "Jira", "Trello", "Asana", "Redmine",
+        # コミュニケーション
+        "Slack", "ChatWork", "Microsoft Teams", "Zoom", "Google Meet",
+        # CMS・EC
+        "WordPress", "Webflow", "STORES", "BASE", "Bカート", "Shopify",
+        "Wix", "futureshop",
+        # 分析
+        "GA4", "Google Analytics", "Search Console", "Looker Studio",
+        "Ahrefs", "Tableau", "Power BI", "ミエルカ",
+        # CRM・MA
+        "Salesforce", "HubSpot", "Marketo", "Pardot",
+        # AI
+        "ChatGPT", "Claude", "Gemini", "Perplexity", "Genspark", "v0",
+        # Office
+        "Excel", "Word", "PowerPoint", "Google Docs", "Google Sheets",
+        # 開発
+        "GitHub", "GitLab", "Docker", "VS Code",
+        # その他
+        "LINE公式アカウント", "Tポイント",
+    }
+
+    # ヘッダーセクションからもツール名を探すが、既知ツールのみ許可
     for header_pat in tool_headers:
         m = re.search(header_pat + r'(.+?)(?:\n\n|\n(?=[■●▪])|$)', text, re.DOTALL)
         if m:
             tool_text = m.group(1).strip()
-            # カンマ、スラッシュ、改行で分割
             parts = re.split(r'[,、/／\n・]+', tool_text)
             for part in parts:
                 part = part.strip()
-                if part and 1 < len(part) < 40:
+                if part in _KNOWN_TOOLS and part not in tools:
                     tools.append(part)
 
-    # 既知のツール名でもテキスト全体からマッチ
-    known_tools = [
-        "Figma", "Illustrator", "Photoshop", "XD", "Sketch", "InDesign",
-        "After Effects", "Premiere Pro", "Canva",
-        "Backlog", "Notion", "Slack", "ChatWork", "Microsoft Teams",
-        "STORES", "BASE", "Bカート", "Shopify",
-        "WordPress", "Webflow",
-        "GA4", "Google Analytics", "Search Console", "Looker Studio",
-        "Ahrefs", "Tableau", "Power BI",
-        "Salesforce", "HubSpot",
-    ]
+    # テキスト全体からも既知ツール名をマッチ
     text_lower = text.lower()
-    for tool in known_tools:
+    for tool in _KNOWN_TOOLS:
         if tool.lower() in text_lower and tool not in tools:
             tools.append(tool)
 
@@ -1142,10 +1242,12 @@ def _build_conditions(info: Dict, strengths: List[Tuple[str, str]],
     if loc:
         conditions["location"] = loc
 
-    # --- タグからの補完 ---
+    # --- タグからの補完（スコアリングで絞り込み） ---
     if tags:
-        # スキルタグからキーワード追加
-        for skill in tags.get("skills", []):
+        raw_skills = tags.get("skills", [])
+        # 関連性スコアリングで汎用キーワードを除外し、コアスキルを優先
+        filtered_skills = _score_and_filter_keywords(raw_skills, full_text)
+        for skill in filtered_skills:
             if skill not in conditions["keywords"]:
                 conditions["keywords"].append(skill)
         # 業界からキーワード追加
@@ -1162,7 +1264,8 @@ def _build_conditions(info: Dict, strengths: List[Tuple[str, str]],
     str_keywords = _extract_keywords_from_text(strength_text)
     for kw in str_keywords:
         if kw not in conditions["keywords"] and kw not in conditions["extra_keywords"]:
-            conditions["extra_keywords"].append(kw)
+            if kw not in _GENERIC_TOOLS and kw not in _GENERIC_INDUSTRY_WORDS:
+                conditions["extra_keywords"].append(kw)
 
     # --- full_text からの補完 ---
     if not conditions["age"]:
@@ -1172,7 +1275,9 @@ def _build_conditions(info: Dict, strengths: List[Tuple[str, str]],
     elif not conditions["salary_min"]:
         conditions["salary_min"], conditions["salary_max"] = _extract_salary(full_text)
     if not conditions["keywords"]:
-        conditions["keywords"] = _extract_keywords_from_text(full_text)[:5]
+        conditions["keywords"] = _score_and_filter_keywords(
+            _extract_keywords_from_text(full_text), full_text
+        )[:10]
     if not conditions["extra_keywords"]:
         conditions["extra_keywords"] = _extract_keywords_from_text(full_text)[5:10]
 
@@ -1182,8 +1287,8 @@ def _build_conditions(info: Dict, strengths: List[Tuple[str, str]],
         if extracted_loc != "大阪":
             conditions["location"] = extracted_loc
 
-    # 重複除去・制限
-    conditions["keywords"] = list(dict.fromkeys(conditions["keywords"]))[:10]
+    # 重複除去・制限（スコアリング済みなので上限を拡大）
+    conditions["keywords"] = list(dict.fromkeys(conditions["keywords"]))[:30]
     conditions["extra_keywords"] = [
         kw for kw in dict.fromkeys(conditions["extra_keywords"])
         if kw not in conditions["keywords"]
@@ -1404,8 +1509,10 @@ def load_candidate_text(text: str, filename: str = "テキスト入力") -> Opti
 
     candidate["tags"] = tags
 
-    # candidateトップレベルの keywords/extra_keywords にもタグから反映
-    candidate["keywords"] = list(tags.get("skills", []))
+    # candidateトップレベルの keywords/extra_keywords にもスコアリング済みを反映
+    candidate["keywords"] = _score_and_filter_keywords(
+        list(tags.get("skills", [])), cleaned
+    )
     candidate["extra_keywords"] = list(tags.get("industries", []))
 
     candidate["conditions"] = _build_conditions(
@@ -1561,6 +1668,7 @@ def load_candidate_docx(filepath_or_bytes, filename: str = "Word") -> Optional[D
     if not text.strip():
         return None
 
+    text = unicodedata.normalize("NFKC", text)
     return load_candidate_text(text, filename)
 
 
