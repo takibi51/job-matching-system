@@ -69,7 +69,12 @@ def _location_matches(job_location: str, job_text: str, desired_location: str) -
     area_keywords = _LOCATION_AREA_MAP.get(desired_location, [])
     if area_keywords:
         combined = job_location + " " + job_text
-        return any(kw in combined for kw in area_keywords)
+        for kw in area_keywords:
+            # 「京都」が「東京都」にマッチする誤判定を防止
+            if kw in combined and not re.search(r'(?<!東)' + re.escape(kw), combined):
+                continue
+            if re.search(r'(?<!東)' + re.escape(kw), combined):
+                return True
     return False
 
 
@@ -105,89 +110,60 @@ def score_job(job: Dict, conditions: Dict) -> Tuple[float, List[str]]:
 
     job_title = job.get("title", "").lower()
 
-    # === 1. キーワードマッチ (最大45点) ===
-    # 一致率 + 出現回数 + キーワード特異度を考慮
+    # === 1. キーワードマッチ (最大60点) ===
+    # 一致数ベース: 多く一致するほど高スコア（職種の適合度を最重視）
     keywords = conditions.get("keywords", [])
     if keywords:
         matched_kw = []
-        total_specificity_score = 0.0
+        title_matched_kw = []
         for kw in keywords:
             kw_lower = kw.lower()
             if kw_lower in job_text:
                 matched_kw.append(kw)
-                # 特異度（具体的なキーワードほど高い）
-                spec = _keyword_specificity(kw)
-                # 出現回数ボーナス（回数が多いほど関連性が高い）
-                count = _count_occurrences(job_text, kw)
-                count_bonus = min(1.0, math.log2(max(count, 1) + 1) * 0.3)
-                # タイトルに含まれていればさらにボーナス
-                title_bonus = 0.4 if kw_lower in job_title else 0.0
-                total_specificity_score += spec + count_bonus + title_bonus
+                if kw_lower in job_title:
+                    title_matched_kw.append(kw)
 
         if matched_kw:
-            # 基本スコア: 一致率（最大25点）
-            match_ratio = len(matched_kw) / len(keywords)
-            base_kw_score = match_ratio * 25
-            # 特異度・出現回数ボーナス（最大20点）
-            specificity_bonus = min(20, total_specificity_score * 3.0)
-            kw_score = min(45, base_kw_score + specificity_bonus)
+            # 一致数ベーススコア: 1個=8点、上限48点
+            count_score = min(48, len(matched_kw) * 8)
+            # タイトル一致ボーナス: タイトルに含まれるKWごとに+3点、上限12点
+            title_bonus = min(12, len(title_matched_kw) * 3)
+            kw_score = min(60, count_score + title_bonus)
             score += kw_score
-            reasons.append(f"キーワード一致: {', '.join(matched_kw[:5])}")
+            reasons.append(f"キーワード一致({len(matched_kw)}個): {', '.join(matched_kw[:5])}")
 
     # === 2. 勤務地マッチ (最大25点) ===
-    prefer_kansai = conditions.get("prefer_kansai", True)
+    # 優先順位: _locations(設定値) > location(希望勤務地) > リモート
     job_location = job.get("location", "")
     desired_location = conditions.get("location", "")
     multi_locations = conditions.get("_locations", [])
 
-    # 複数勤務地が指定されている場合（OR条件）
-    if multi_locations and any(l != "全国" for l in multi_locations):
-        loc_matched = any(
-            _location_matches(job_location, job_text, loc)
-            for loc in multi_locations if loc != "全国"
-        )
-        matched_loc_names = [
-            loc for loc in multi_locations
-            if loc != "全国" and _location_matches(job_location, job_text, loc)
+    # 設定された勤務地を最優先（複数の場合はOR条件）
+    _active_locs = [l for l in multi_locations if l and l != "全国"] if multi_locations else []
+    if not _active_locs and desired_location and desired_location != "全国":
+        _active_locs = [desired_location]
+
+    if _active_locs:
+        loc_matched_names = [
+            loc for loc in _active_locs
+            if _location_matches(job_location, job_text, loc)
         ]
-        if loc_matched:
+        if loc_matched_names:
             score += 25
-            reasons.append(f"希望勤務地({', '.join(matched_loc_names[:2])})に一致")
+            reasons.append(f"希望勤務地({', '.join(loc_matched_names[:2])})に一致")
         elif any(kw in job_text for kw in REMOTE_KEYWORDS):
-            score += 18
-            reasons.append("リモートワーク可能")
-        else:
-            score += 3
-    elif prefer_kansai:
-        kansai_match = any(kw in job_location for kw in KANSAI_KEYWORDS)
-        if kansai_match:
-            score += 25
-            reasons.append("関西エリアの求人")
-        elif any(kw in job_text for kw in REMOTE_KEYWORDS):
-            score += 18
-            reasons.append("リモートワーク可能")
-        elif _location_matches(job_location, job_text, desired_location):
             score += 15
-            reasons.append(f"希望勤務地({desired_location})に一致")
+            reasons.append("リモートワーク可能")
         else:
-            score += 3
+            score += 0
     else:
-        if desired_location and desired_location != "全国":
-            if _location_matches(job_location, job_text, desired_location):
-                score += 25
-                reasons.append(f"希望勤務地({desired_location})に一致")
-            elif any(kw in job_text for kw in REMOTE_KEYWORDS):
-                score += 18
-                reasons.append("リモートワーク可能")
-            else:
-                score += 3
-        elif any(kw in job_text for kw in REMOTE_KEYWORDS):
-            score += 18
+        if any(kw in job_text for kw in REMOTE_KEYWORDS):
+            score += 10
             reasons.append("リモートワーク可能")
         else:
             score += 5
 
-    # === 3. 年収マッチ (最大20点) ===
+    # === 3. 年収マッチ (最大10点) ===
     salary_min = conditions.get("salary_min", 0)
     salary_max = conditions.get("salary_max", 0)
     job_salary = job.get("salary", "")
@@ -197,48 +173,20 @@ def score_job(job: Dict, conditions: Dict) -> Tuple[float, List[str]]:
         if job_sal_range[1] > 0:
             if job_sal_range[1] >= salary_min:
                 if job_sal_range[0] <= salary_max * 1.3 if salary_max > 0 else True:
-                    score += 20
+                    score += 10
                     reasons.append(f"年収条件に合致 ({job_salary})")
                 else:
-                    score += 10
+                    score += 5
                     reasons.append(f"年収やや高め ({job_salary})")
-            else:
-                score += 5
-                reasons.append(f"年収情報あり ({job_salary})")
 
-    # === 4. 追加キーワードマッチ (最大10点) ===
+    # === 4. 追加キーワードマッチ (最大5点) ===
     extra_kw = conditions.get("extra_keywords", [])
     if extra_kw:
         matched_extra = [kw for kw in extra_kw if kw.lower() in job_text]
         if matched_extra:
-            extra_score = min(10, (len(matched_extra) / len(extra_kw)) * 10)
+            extra_score = min(5, (len(matched_extra) / len(extra_kw)) * 5)
             score += extra_score
             reasons.append(f"追加条件一致: {', '.join(matched_extra[:3])}")
-
-    # === 5. 年齢適合ボーナス (最大5点) ===
-    age = conditions.get("age", 0)
-    if age > 0:
-        if age >= 40:
-            if any(kw in job_text for kw in ["ミドル", "シニア", "40代", "50代", "経験者", "管理職", "マネージャー"]):
-                score += 5
-                reasons.append("ミドル・シニア歓迎")
-            elif any(kw in job_text for kw in ["年齢不問", "学歴不問"]):
-                score += 3
-                reasons.append("年齢不問")
-        elif age <= 30:
-            if any(kw in job_text for kw in ["第二新卒", "未経験", "20代", "若手", "ポテンシャル"]):
-                score += 5
-                reasons.append("若手・第二新卒歓迎")
-
-    # === 6. 情報充実度ボーナス (最大5点) ===
-    company = job.get("company", "").strip()
-    has_salary = bool(job_salary and job_salary.strip())
-    has_company = bool(company)
-
-    if has_salary and has_company:
-        score += 5
-    elif has_salary or has_company:
-        score += 2
 
     if not reasons:
         reasons.append("検索キーワードに関連")
