@@ -1489,6 +1489,17 @@ if page == "candidate_search":
         active_cand = saved_cands[sel_idx]
         conditions = _cand_to_conditions(active_cand)
 
+    # --- 候補者変更の検知: 前回と異なる候補者が選択されたら検索結果をクリア ---
+    _current_cand_id = active_cand.get("id", active_cand.get("name", "")) if active_cand else ""
+    if st.session_state.get("_cs_prev_cand_id") != _current_cand_id:
+        st.session_state["_cs_prev_cand_id"] = _current_cand_id
+        st.session_state.pop("_cs_search_done", None)
+        # 検索条件ウィジェットの古い値もクリア
+        for _wk in ["cs_smin", "cs_smax", "cs_age", "cs_loc", "cs_kw",
+                     "cs_jt", "cs_domain", "cs_roles", "cs_locs_filter", "cs_exclude",
+                     "cs_fscore", "cs_sort", "cs_fsal"]:
+            st.session_state.pop(_wk, None)
+
     if active_cand and conditions:
         mf_active = evaluate_market_fit(active_cand)
         star_txt = "⭐ " if mf_active["has_star"] else ""
@@ -1518,138 +1529,147 @@ if page == "candidate_search":
                 "_locations": loc_vals,  # 複数勤務地（内部用）
             }
 
+        # --- 検索ボタン ---
+        if st.button("🔍 求人を検索", key="cs_search_btn", type="primary"):
+            st.session_state["_cs_search_done"] = True
+
         st.markdown("---")
 
-        # 2カラムレイアウト: メイン結果 + AIサイドパネル
-        _cs_main, _cs_ai = st.columns([3, 1])
+        # 検索未実行の場合はメッセージを表示
+        if not st.session_state.get("_cs_search_done"):
+            st.info("「🔍 求人を検索」ボタンを押すと、この候補者にマッチする求人を検索します。")
 
-        with _cs_main:
-            # AIトリガーの検索結果
-            _render_ai_search_results("candidateSearch")
+        # 検索実行済みの場合のみ結果を表示
+        if st.session_state.get("_cs_search_done"):
+            # 2カラムレイアウト: メイン結果 + AIサイドパネル
+            _cs_main, _cs_ai = st.columns([3, 1])
 
-            # フィルタ行: 求人種別 + 職域 + 職種
-            _cf1, _cf2 = st.columns(2)
-            jt_filter = _cf1.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key="cs_jt")
-            jt_val = None
-            if "契約中" in jt_filter:
-                jt_val = "contracted"
-            elif "Web" in jt_filter:
-                jt_val = "web"
+            with _cs_main:
+                # AIトリガーの検索結果
+                _render_ai_search_results("candidateSearch")
 
-            _cf3, _cf4 = st.columns(2)
-            cs_domain = _cf3.selectbox("職域で絞り込み", ["すべて"] + list(_JOB_PRESETS.keys()), key="cs_domain")
-            cs_roles = []
-            if cs_domain != "すべて":
-                cs_roles = _cf4.multiselect("職種で絞り込み", _JOB_PRESETS.get(cs_domain, []), key="cs_roles")
+                # フィルタ行: 求人種別 + 職域 + 職種
+                _cf1, _cf2 = st.columns(2)
+                jt_filter = _cf1.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key="cs_jt")
+                jt_val = None
+                if "契約中" in jt_filter:
+                    jt_val = "contracted"
+                elif "Web" in jt_filter:
+                    jt_val = "web"
 
-            cs_locs = st.multiselect("勤務地で絞り込み（複数選択可・OR条件）", _LOCATION_OPTIONS, default=[], key="cs_locs_filter")
-            cs_exclude = st.text_input("🚫 除外ワード（スペース区切り）", placeholder="例: 派遣 契約社員 未経験", key="cs_exclude")
+                _cf3, _cf4 = st.columns(2)
+                cs_domain = _cf3.selectbox("職域で絞り込み", ["すべて"] + list(_JOB_PRESETS.keys()), key="cs_domain")
+                cs_roles = []
+                if cs_domain != "すべて":
+                    cs_roles = _cf4.multiselect("職種で絞り込み", _JOB_PRESETS.get(cs_domain, []), key="cs_roles")
 
-            if stats["total_jobs"] == 0:
-                st.markdown('<div class="empty-state"><h3>求人データがまだありません</h3>'
-                            '<p>「📦 データ取込」からデータを追加してください</p></div>',
-                            unsafe_allow_html=True)
-            else:
-                search_query = " ".join(conditions.get("keywords", []) + conditions.get("extra_keywords", [])[:3])
-                matched_jobs = search_jobs(search_query) if search_query.strip() else get_all_jobs(limit=300, job_type=jt_val)
-                if jt_val and matched_jobs:
-                    matched_jobs = [j for j in matched_jobs if j.get("job_type", "web") == jt_val]
-                # 職域・職種フィルタ
-                matched_jobs = _filter_jobs_by_category(matched_jobs, cs_domain, cs_roles)
-                # 勤務地フィルタ（メイン画面のmultiselect優先、なければexpander内を使用）
-                _cs_loc_filter = cs_locs if cs_locs else conditions.get("_locations", [])
-                matched_jobs = _filter_jobs_by_locations(matched_jobs, _cs_loc_filter)
-                # 除外ワードフィルタ
-                matched_jobs = _filter_jobs_by_exclude_words(matched_jobs, cs_exclude)
-                # 年収近接フィルタ（現年収と大きく乖離する求人を除外）
-                _cur_sal = conditions.get("current_salary", 0)
-                matched_jobs = _filter_jobs_by_salary_proximity(matched_jobs, _cur_sal)
-                # 最低年収厳守フィルタ（salary_min以下の求人を完全除外）
-                _sal_min = conditions.get("salary_min", 0)
-                matched_jobs = _filter_jobs_by_salary_min(matched_jobs, _sal_min)
+                cs_locs = st.multiselect("勤務地で絞り込み（複数選択可・OR条件）", _LOCATION_OPTIONS, default=[], key="cs_locs_filter")
+                cs_exclude = st.text_input("🚫 除外ワード（スペース区切り）", placeholder="例: 派遣 契約社員 未経験", key="cs_exclude")
 
-                if matched_jobs:
-                    # メイン画面の勤務地選択もスコアリングに反映
-                    if cs_locs:
-                        conditions["_locations"] = cs_locs
-                    ranked = rank_jobs(matched_jobs, conditions, candidate=active_cand)
-                    fc1, fc2, fc3 = st.columns(3)
-                    min_score = fc1.slider("最低スコア", 0, 100, 0, key="cs_fscore")
-                    sort_opt = fc2.selectbox("並べ替え", ["マッチ度順", "年収順（高→低）", "新着順"], key="cs_sort")
-                    require_salary = fc3.checkbox("年収あり", value=False, key="cs_fsal")
-
-                    filtered = [j for j in ranked if j.get("score", 0) >= min_score
-                                and (not require_salary or j.get("salary", "").strip())]
-                    if sort_opt == "年収順（高→低）":
-                        def _sk(j):
-                            nums = re.findall(r'(\d+)', j.get("salary", "").replace(",", ""))
-                            return max([int(n) for n in nums]) if nums else 0
-                        filtered.sort(key=_sk, reverse=True)
-                    elif sort_opt == "新着順":
-                        filtered.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
-
-                    st.markdown(f"**{len(filtered)}件**マッチ（全{stats['total_jobs']:,}件中）")
-
-                    for i, job in enumerate(filtered[:50]):
-                        score = job.get("score", 0)
-                        jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
-                        st.markdown(f"""
-                        <div class="job-card">
-                            {_score_badge(score)} <span style="color:#a0aec0;font-size:0.8rem;">{jt_icon} #{i+1}</span>
-                            {_match_bar(score)}
-                            <div style="font-size:1.05rem;font-weight:700;color:#1a202c;margin:0.3rem 0;">
-                                {esc(_translate_title(job.get('title','不明')))}
-                            </div>
-                            🏢 <strong>{esc(job.get('company',''))}</strong>
-                            &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
-                            &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
-                            <div style="margin-top:0.3rem;">{_fit_tags(job.get('match_reasons',''))}</div>
-                        </div>""", unsafe_allow_html=True)
-
-                        qa1, qa2, qa3 = st.columns([1, 1, 1])
-                        if qa1.button("📄 求人詳細", key=f"cs_jpop_{i}"):
-                            show_job_popup(job, saved_cands)
-                        if active_cand and active_cand.get("id"):
-                            if qa2.button("📊 提案登録", key=f"cs_prop_{i}"):
-                                save_proposal(active_cand["id"], job.get("url", ""), "提案済み", "")
-                                st.success("提案を登録しました")
-                                st.rerun()
-                        url = _job_url(job.get("url", ""))
-                        if safe_url(url):
-                            qa3.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
-
-                    with st.expander(f"📊 テーブル表示（{len(filtered)}件）"):
-                        df = pd.DataFrame([{
-                            "順位": i, "スコア": j.get("score", 0),
-                            "種別": "契約中" if j.get("job_type") == "contracted" else "Web",
-                            "求人タイトル": _translate_title(j.get("title", "")), "企業名": j.get("company", ""),
-                            "勤務地": j.get("location", ""), "年収": j.get("salary", ""),
-                            "ソース": j.get("source", ""), "URL": _job_url(j.get("url", "")),
-                        } for i, j in enumerate(filtered, 1)])
-                        st.dataframe(df, hide_index=True, use_container_width=True)
-
-                        # --- Excel出力（2シート: 候補者情報 + 求人一覧） ---
-                        _dl1, _dl2 = st.columns(2)
-                        with _dl1:
-                            # CSV出力にも除外ワードを適用（dfはfiltered由来なので既に適用済みだが念のため）
-                            csv_buf = io.StringIO()
-                            df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
-                            st.download_button("📄 CSV DL", csv_buf.getvalue(), "マッチング結果.csv", "text/csv", key="cs_csv_dl")
-                        with _dl2:
-                            xlsx_buf = _build_matching_excel(active_cand, conditions, filtered, exclude_text=cs_exclude)
-                            cand_name = active_cand.get("name", "候補者") if active_cand else "候補者"
-                            st.download_button(
-                                "📊 Excel DL（営業用）", xlsx_buf,
-                                f"マッチング_{cand_name}.xlsx",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="cs_xlsx_dl",
-                            )
+                if stats["total_jobs"] == 0:
+                    st.markdown('<div class="empty-state"><h3>求人データがまだありません</h3>'
+                                '<p>「📦 データ取込」からデータを追加してください</p></div>',
+                                unsafe_allow_html=True)
                 else:
-                    st.info("条件に一致する求人がありません。")
+                    search_query = " ".join(conditions.get("keywords", []) + conditions.get("extra_keywords", [])[:3])
+                    matched_jobs = search_jobs(search_query) if search_query.strip() else get_all_jobs(limit=300, job_type=jt_val)
+                    if jt_val and matched_jobs:
+                        matched_jobs = [j for j in matched_jobs if j.get("job_type", "web") == jt_val]
+                    # 職域・職種フィルタ
+                    matched_jobs = _filter_jobs_by_category(matched_jobs, cs_domain, cs_roles)
+                    # 勤務地フィルタ（メイン画面のmultiselect優先、なければexpander内を使用）
+                    _cs_loc_filter = cs_locs if cs_locs else conditions.get("_locations", [])
+                    matched_jobs = _filter_jobs_by_locations(matched_jobs, _cs_loc_filter)
+                    # 除外ワードフィルタ
+                    matched_jobs = _filter_jobs_by_exclude_words(matched_jobs, cs_exclude)
+                    # 年収近接フィルタ（現年収と大きく乖離する求人を除外）
+                    _cur_sal = conditions.get("current_salary", 0)
+                    matched_jobs = _filter_jobs_by_salary_proximity(matched_jobs, _cur_sal)
+                    # 最低年収厳守フィルタ（salary_min以下の求人を完全除外）
+                    _sal_min = conditions.get("salary_min", 0)
+                    matched_jobs = _filter_jobs_by_salary_min(matched_jobs, _sal_min)
 
-        with _cs_ai:
-            _cs_chat_ctx = {"candidate": active_cand if active_cand else None, "tab": "candidateSearch"}
-            render_ai_sidebar("candidateSearch", _cs_chat_ctx)
+                    if matched_jobs:
+                        # メイン画面の勤務地選択もスコアリングに反映
+                        if cs_locs:
+                            conditions["_locations"] = cs_locs
+                        ranked = rank_jobs(matched_jobs, conditions, candidate=active_cand)
+                        fc1, fc2, fc3 = st.columns(3)
+                        min_score = fc1.slider("最低スコア", 0, 100, 0, key="cs_fscore")
+                        sort_opt = fc2.selectbox("並べ替え", ["マッチ度順", "年収順（高→低）", "新着順"], key="cs_sort")
+                        require_salary = fc3.checkbox("年収あり", value=False, key="cs_fsal")
+
+                        filtered = [j for j in ranked if j.get("score", 0) >= min_score
+                                    and (not require_salary or j.get("salary", "").strip())]
+                        if sort_opt == "年収順（高→低）":
+                            def _sk(j):
+                                nums = re.findall(r'(\d+)', j.get("salary", "").replace(",", ""))
+                                return max([int(n) for n in nums]) if nums else 0
+                            filtered.sort(key=_sk, reverse=True)
+                        elif sort_opt == "新着順":
+                            filtered.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+
+                        st.markdown(f"**{len(filtered)}件**マッチ（全{stats['total_jobs']:,}件中）")
+
+                        for i, job in enumerate(filtered[:50]):
+                            score = job.get("score", 0)
+                            jt_icon = "📌" if job.get("job_type") == "contracted" else "🌐"
+                            st.markdown(f"""
+                            <div class="job-card">
+                                {_score_badge(score)} <span style="color:#a0aec0;font-size:0.8rem;">{jt_icon} #{i+1}</span>
+                                {_match_bar(score)}
+                                <div style="font-size:1.05rem;font-weight:700;color:#1a202c;margin:0.3rem 0;">
+                                    {esc(_translate_title(job.get('title','不明')))}
+                                </div>
+                                🏢 <strong>{esc(job.get('company',''))}</strong>
+                                &nbsp;|&nbsp; 📍 {esc(job.get('location',''))}
+                                &nbsp;|&nbsp; 💰 {esc(job.get('salary',''))}
+                                <div style="margin-top:0.3rem;">{_fit_tags(job.get('match_reasons',''))}</div>
+                            </div>""", unsafe_allow_html=True)
+
+                            qa1, qa2, qa3 = st.columns([1, 1, 1])
+                            if qa1.button("📄 求人詳細", key=f"cs_jpop_{i}"):
+                                show_job_popup(job, saved_cands)
+                            if active_cand and active_cand.get("id"):
+                                if qa2.button("📊 提案登録", key=f"cs_prop_{i}"):
+                                    save_proposal(active_cand["id"], job.get("url", ""), "提案済み", "")
+                                    st.success("提案を登録しました")
+                                    st.rerun()
+                            url = _job_url(job.get("url", ""))
+                            if safe_url(url):
+                                qa3.markdown(f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:0.4rem 1rem;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#667eea;font-size:0.85rem;">🌐 求人ページ</a>', unsafe_allow_html=True)
+
+                        with st.expander(f"📊 テーブル表示（{len(filtered)}件）"):
+                            df = pd.DataFrame([{
+                                "順位": i, "スコア": j.get("score", 0),
+                                "種別": "契約中" if j.get("job_type") == "contracted" else "Web",
+                                "求人タイトル": _translate_title(j.get("title", "")), "企業名": j.get("company", ""),
+                                "勤務地": j.get("location", ""), "年収": j.get("salary", ""),
+                                "ソース": j.get("source", ""), "URL": _job_url(j.get("url", "")),
+                            } for i, j in enumerate(filtered, 1)])
+                            st.dataframe(df, hide_index=True, use_container_width=True)
+
+                            # --- Excel出力（2シート: 候補者情報 + 求人一覧） ---
+                            _dl1, _dl2 = st.columns(2)
+                            with _dl1:
+                                csv_buf = io.StringIO()
+                                df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
+                                st.download_button("📄 CSV DL", csv_buf.getvalue(), "マッチング結果.csv", "text/csv", key="cs_csv_dl")
+                            with _dl2:
+                                xlsx_buf = _build_matching_excel(active_cand, conditions, filtered, exclude_text=cs_exclude)
+                                cand_name = active_cand.get("name", "候補者") if active_cand else "候補者"
+                                st.download_button(
+                                    "📊 Excel DL（営業用）", xlsx_buf,
+                                    f"マッチング_{cand_name}.xlsx",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="cs_xlsx_dl",
+                                )
+                    else:
+                        st.info("条件に一致する求人がありません。")
+
+            with _cs_ai:
+                _cs_chat_ctx = {"candidate": active_cand if active_cand else None, "tab": "candidateSearch"}
+                render_ai_sidebar("candidateSearch", _cs_chat_ctx)
 
     else:
         _cs_main2, _cs_ai2 = st.columns([3, 1])
