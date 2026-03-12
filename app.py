@@ -608,7 +608,7 @@ def _build_matching_excel(candidate, conditions, ranked_jobs, exclude_text=""):
             "勤務地": j.get("location", ""),
             "年収": j.get("salary", ""),
             "ソース": j.get("source", ""),
-            "マッチする理由": j.get("match_reasons", ""),
+            "マッチする理由": j.get("fit_reason", j.get("match_reasons", "")),
             "求人URL": _job_url(j.get("url", "")),
         })
     df_jobs = pd.DataFrame(job_rows) if job_rows else pd.DataFrame(
@@ -1568,7 +1568,7 @@ if page == "candidate_search":
                     # メイン画面の勤務地選択もスコアリングに反映
                     if cs_locs:
                         conditions["_locations"] = cs_locs
-                    ranked = rank_jobs(matched_jobs, conditions)
+                    ranked = rank_jobs(matched_jobs, conditions, candidate=active_cand)
                     fc1, fc2, fc3 = st.columns(3)
                     min_score = fc1.slider("最低スコア", 0, 100, 0, key="cs_fscore")
                     sort_opt = fc2.selectbox("並べ替え", ["マッチ度順", "年収順（高→低）", "新着順"], key="cs_sort")

@@ -252,49 +252,98 @@ def generate_job_summary(job: Dict) -> str:
     return "".join(parts) if parts else "詳細は求人ページをご確認ください"
 
 
-def generate_fit_reason(job: Dict, conditions: Dict, reasons: List[str]) -> str:
-    """候補者と求人のフィット理由を詳細に生成"""
-    fit_parts = []
+def generate_fit_reason(job: Dict, conditions: Dict, reasons: List[str],
+                        candidate: Dict = None) -> str:
+    """候補者と求人のフィット理由を推薦文フレームで生成。
 
+    情報が十分にある場合:
+      本ポジションで求められている「○○」「○○」という点において、
+      候補者の「○○の実績」「○○への理解」がマッチしていると考え、
+      推薦させていただきました。
+
+    情報が不足している場合:
+      マッチしたキーワードを表示。
+    """
     keywords = conditions.get("keywords", [])
     job_text = " ".join([
         job.get("title", ""),
         job.get("company", ""),
         job.get("description", ""),
     ]).lower()
+    job_title = job.get("title", "")
+    job_desc = job.get("description", "")
 
-    # キーワードマッチの詳細
-    matched = [kw for kw in keywords if kw.lower() in job_text]
-    if matched:
-        fit_parts.append(f"候補者の経験・スキル（{', '.join(matched[:3])}）が求人内容と合致")
+    matched_kw = [kw for kw in keywords if kw.lower() in job_text]
 
-    # 勤務地の理由
-    location_reasons = [r for r in reasons if "関西" in r or "勤務地" in r or "リモート" in r]
-    if location_reasons:
-        fit_parts.append(location_reasons[0])
+    # --- 候補者情報の収集 ---
+    info = candidate.get("info", {}) if candidate else {}
+    person_summary = info.get("人物要約", "") or ""
+    career_hist = info.get("経歴略歴", "") or ""
+    career_summary = info.get("career_summary", "") or ""
+    hard_skills = info.get("hard_skills", [])
+    if isinstance(hard_skills, list):
+        hard_skills = [s for s in hard_skills if s]
 
-    # 年収の理由
-    salary_reasons = [r for r in reasons if "年収" in r]
-    if salary_reasons:
-        fit_parts.append(salary_reasons[0])
+    # 候補者の強み文を組み立て
+    cand_strengths = []
+    # 経歴からの実績
+    if career_hist:
+        cand_strengths.append(career_hist.split("。")[0] if "。" in career_hist else career_hist[:60])
+    # 人物要約からの特徴
+    if person_summary:
+        # 最初の文を抽出
+        first_sent = person_summary.split("。")[0] if "。" in person_summary else person_summary[:80]
+        if first_sent and first_sent not in cand_strengths:
+            cand_strengths.append(first_sent)
+    # ハードスキル
+    if hard_skills:
+        cand_strengths.append(f"{'・'.join(hard_skills[:3])}のスキル")
 
-    # 年齢の理由
-    age_reasons = [r for r in reasons if "ミドル" in r or "若手" in r or "年齢" in r]
-    if age_reasons:
-        fit_parts.append(age_reasons[0])
+    # --- 求人が求めるポイントを抽出 ---
+    job_requirements = []
+    # マッチしたキーワードから求人側の要件を構築
+    if matched_kw:
+        # 職種系（タイトルに含まれるKW）
+        title_kw = [kw for kw in matched_kw if kw.lower() in job_title.lower()]
+        other_kw = [kw for kw in matched_kw if kw not in title_kw]
+        if title_kw:
+            job_requirements.append(f"{'・'.join(title_kw[:2])}領域の経験")
+        if other_kw:
+            job_requirements.append(f"{'・'.join(other_kw[:3])}の知見")
 
-    # 追加条件の理由
-    extra_reasons = [r for r in reasons if "追加条件" in r]
-    if extra_reasons:
-        fit_parts.append(extra_reasons[0])
+    # --- 推薦文の組み立て ---
+    # 十分な情報がある場合: 推薦文フレーム
+    if len(matched_kw) >= 2 and cand_strengths and job_requirements:
+        req_text = "「" + "」「".join(job_requirements[:3]) + "」"
+        # 候補者の強みを推薦ポイントとして整理
+        rec_points = []
+        if career_hist:
+            # 経歴から実績を抽出
+            rec_points.append(cand_strengths[0] + "の実績")
+        if matched_kw:
+            # マッチしたスキル領域
+            core_kw = matched_kw[:3]
+            rec_points.append(f"{'・'.join(core_kw)}領域への深い理解")
+        if person_summary and len(cand_strengths) >= 2:
+            rec_points.append(cand_strengths[1])
 
-    if not fit_parts:
-        fit_parts.append("検索条件に関連する求人")
+        rec_text = "\n".join(f"・{p}" for p in rec_points[:3])
 
-    return " / ".join(fit_parts)
+        return (
+            f"本ポジションで求められている\n"
+            f"{req_text}\n"
+            f"という点において、\n\n"
+            f"{rec_text}\n\n"
+            f"がマッチしていると考え、推薦させていただきました。"
+        )
+
+    # 情報不足の場合: マッチキーワード表示
+    if matched_kw:
+        return f"マッチキーワード: {', '.join(matched_kw)}"
+    return "検索条件に関連する求人"
 
 
-def rank_jobs(jobs: List[Dict], conditions: Dict) -> List[Dict]:
+def rank_jobs(jobs: List[Dict], conditions: Dict, candidate: Dict = None) -> List[Dict]:
     """求人リストをスコア順にランキング（要約・フィット理由付き）"""
     scored_jobs = []
     for job in jobs:
@@ -303,7 +352,7 @@ def rank_jobs(jobs: List[Dict], conditions: Dict) -> List[Dict]:
         job_with_score["score"] = round(score, 1)
         job_with_score["match_reasons"] = " / ".join(reasons)
         job_with_score["job_summary"] = generate_job_summary(job)
-        job_with_score["fit_reason"] = generate_fit_reason(job, conditions, reasons)
+        job_with_score["fit_reason"] = generate_fit_reason(job, conditions, reasons, candidate=candidate)
         scored_jobs.append(job_with_score)
 
     # スコア降順でソート
