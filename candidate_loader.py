@@ -111,12 +111,21 @@ _SKILL_KEYWORDS = [
     "グラフィックデザイナー", "デザイン", "クリエイティブ",
     "Figma", "Photoshop", "Illustrator", "XD", "Sketch", "InDesign",
     "After Effects", "Premiere Pro",
+    "アートディレクター", "グラフィックデザイン", "DTP", "印刷",
+    "VI", "CI", "UXデザイン", "UIデザイン",
+    "GIFアニメーション", "バナー制作",
     # マーケティング
     "Webマーケティング", "デジタルマーケティング", "マーケター",
     "Web広告", "SNS広告", "Google広告", "Meta広告", "リスティング広告",
     "SEO", "SEM", "LPO", "CRO", "MA", "CRM",
     "コンテンツマーケティング", "SNS運用", "広告運用",
     "ブランディング", "PR", "広報",
+    "GEO", "LLMO", "ABテスト", "A/Bテスト", "CVR",
+    "GA4", "Google Analytics", "Search Console", "Looker Studio",
+    "Ahrefs",
+    # ディレクション
+    "Webディレクター", "WEBディレクター", "ディレクション", "プロジェクトマネジメント",
+    "要件定義", "ワイヤーフレーム", "サイトマップ", "仕様書",
     # 開発・IT
     "エンジニア", "プログラマー", "SE", "フロントエンド", "バックエンド",
     "フルスタック", "インフラ", "SRE", "DevOps",
@@ -132,6 +141,10 @@ _SKILL_KEYWORDS = [
     "プロジェクトマネージャー", "PM", "ディレクター", "プロデューサー",
     "企画", "事業企画", "経営企画", "商品企画",
     "カスタマーサクセス", "CS", "カスタマーサポート",
+    "見積作成", "提案書作成", "顧客折衝", "予算管理",
+    "チームマネジメント", "メンバー育成", "進捗管理",
+    "イベント企画", "展覧会",
+    "商品企画", "販売促進", "広告出稿",
     # 管理
     "マネジメント", "チームリーダー", "管理職", "事業部長", "部長",
     "人事", "採用", "総務", "経理", "労務", "法務", "財務", "経営管理",
@@ -148,9 +161,14 @@ _SKILL_KEYWORDS = [
     # 制作
     "LP制作", "サイト制作", "コーディング", "ライティング",
     "動画制作", "映像制作", "写真撮影", "コピーライター",
-    "編集", "校正",
+    "編集", "校正", "校閲", "原稿作成",
+    # ツール
+    "Backlog", "Notion", "Slack", "ChatWork", "Microsoft Teams",
+    "STORES", "BASE", "Bカート",
+    # EC
+    "EC運営", "ECサイト構築", "オンラインショップ", "通販",
     # 分析
-    "データ分析", "アクセス解析", "Google Analytics", "KPI",
+    "データ分析", "アクセス解析", "KPI",
     "プロジェクト管理", "業務改善", "BPR",
     "Tableau", "Power BI", "SQL", "Excel VBA",
     # 業界
@@ -193,6 +211,7 @@ _CERTIFICATIONS = [
     "普通自動車免許", "大型免許",
     "衛生管理者", "防火管理者",
     "フォークリフト",
+    "ネットマーケティング検定",
 ]
 
 # 業界辞書
@@ -520,16 +539,227 @@ def _extract_education(text: str) -> Dict:
 
 
 def _extract_age(text: str) -> int:
-    """テキストから年齢を抽出"""
+    """テキストから年齢を抽出（複数パターン対応）"""
+    # 「年齢: 30歳」パターン
     m = re.search(r'(?:年齢|Age)[：:\s]*(\d{1,2})歳?', text)
     if m:
         return int(m.group(1))
+    # 「満50歳」「満 50 歳」パターン
+    m = re.search(r'満\s*(\d+)\s*歳', text)
+    if m:
+        age = int(m.group(1))
+        if 18 <= age <= 70:
+            return age
+    # 「1976年01月23日生」→ 生年月日から年齢を計算（基準年: 2026）
+    m = re.search(r'(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日生', text)
+    if m:
+        birth_year = int(m.group(1))
+        birth_month = int(m.group(2))
+        birth_day = int(m.group(3))
+        # 2026年3月12日を基準に計算
+        age = 2026 - birth_year
+        # 誕生日がまだ来ていなければ1歳引く
+        if (birth_month, birth_day) > (3, 12):
+            age -= 1
+        if 18 <= age <= 70:
+            return age
+    # 「30歳」パターン（一般的な記載）
     m = re.search(r'(\d{2})歳', text)
     if m:
         age = int(m.group(1))
         if 18 <= age <= 70:
             return age
     return 0
+
+
+def _extract_gender(text: str) -> str:
+    """テキストから性別を抽出"""
+    # 「性別：女」「性別: 男」パターン
+    m = re.search(r'性別[：:\s]*([男女])', text)
+    if m:
+        return m.group(1) + "性"
+    # テキスト中の単独の「男」「女」（性別文脈で出現するもの）
+    # 「日生（満50歳）」の近くや履歴書の基本情報欄にある性別表記
+    m = re.search(r'歳\s*[）\)]\s*([男女])\b', text)
+    if m:
+        return m.group(1) + "性"
+    # 行頭や区切り文字の後に単独で出現する「男」「女」
+    m = re.search(r'(?:^|[\s　\t])\s*([男女])\s*(?:$|[\s　\t\n])', text, re.MULTILINE)
+    if m:
+        return m.group(1) + "性"
+    return ""
+
+
+def _extract_career_summary(text: str) -> str:
+    """
+    職務経歴要約・経歴略歴を抽出（最大800文字）。
+    職務経歴要約セクションがあればそれを優先、なければ履歴書の職歴タイムラインを構築。
+    """
+    # 職務経歴要約セクションを探す
+    summary_headers = [
+        r'■\s*職務経歴要約',
+        r'■\s*職務要約',
+        r'■\s*経歴要約',
+        r'Career\s*Summary',
+        r'職務経歴要約',
+        r'職務要約',
+        r'経歴要約',
+    ]
+    best_content = ""
+    for header_pat in summary_headers:
+        # 次の■セクション or 空行2つ で区切る
+        m = re.search(header_pat + r'[：:\s]*\n?([\s\S]*?)(?=\n\s*■|\n\s*\n\s*\n)', text)
+        if m:
+            content = m.group(1).strip()
+            if content and len(content) > len(best_content):
+                best_content = content
+        # ■がない場合（末尾まで）
+        if not best_content:
+            m = re.search(header_pat + r'[：:\s]*\n?([\s\S]*?)$', text)
+            if m:
+                content = m.group(1).strip()
+                if content and len(content) > len(best_content):
+                    best_content = content
+    if best_content:
+        return best_content[:800]
+
+    # 学歴・職歴テーブルのエントリから簡易タイムラインを構築
+    career_entries = _extract_resume_career_history(text)
+    if career_entries:
+        timeline = " → ".join(career_entries[:5])
+        return timeline[:800]
+
+    return ""
+
+
+def _extract_self_pr(text: str) -> str:
+    """
+    自己PRセクションを抽出（最大800文字）。
+    セクションヘッダーから次の■セクションまで、または末尾まで取得。
+    短すぎる場合は周辺テキストも含めて十分な分量を確保する。
+    """
+    pr_headers = [
+        r'■\s*自己\s*PR',
+        r'自己\s*PR',
+        r'■\s*志望の動機',
+        r'志望の動機',
+        r'■\s*アピールポイント',
+        r'アピールポイント',
+    ]
+    best_content = ""
+    for header_pat in pr_headers:
+        # 次の■セクション or 空行2つ で区切る
+        m = re.search(header_pat + r'[：:\s]*\n?([\s\S]*?)(?=\n\s*■|\n\s*\n\s*\n)', text)
+        if m:
+            content = m.group(1).strip()
+            if content and len(content) > len(best_content):
+                best_content = content
+        # ■がない場合（末尾まで）
+        if not best_content:
+            m = re.search(header_pat + r'[：:\s]*\n?([\s\S]*?)$', text)
+            if m:
+                content = m.group(1).strip()
+                if content and len(content) > len(best_content):
+                    best_content = content
+    if best_content:
+        return best_content[:800]
+    return ""
+
+
+def _extract_tools_from_text(text: str) -> List[str]:
+    """使用ツールセクションからツール名を抽出"""
+    tools = []
+    # 「使用ツール」「ツール」「使用技術」セクションを探す
+    tool_headers = [
+        r'使用ツール[：:\s]*',
+        r'ツール[：:\s]*',
+        r'使用技術[：:\s]*',
+        r'使用ソフト[：:\s]*',
+        r'開発環境[：:\s]*',
+    ]
+    for header_pat in tool_headers:
+        m = re.search(header_pat + r'(.+?)(?:\n\n|\n(?=[■●▪])|$)', text, re.DOTALL)
+        if m:
+            tool_text = m.group(1).strip()
+            # カンマ、スラッシュ、改行で分割
+            parts = re.split(r'[,、/／\n・]+', tool_text)
+            for part in parts:
+                part = part.strip()
+                if part and 1 < len(part) < 40:
+                    tools.append(part)
+
+    # 既知のツール名でもテキスト全体からマッチ
+    known_tools = [
+        "Figma", "Illustrator", "Photoshop", "XD", "Sketch", "InDesign",
+        "After Effects", "Premiere Pro", "Canva",
+        "Backlog", "Notion", "Slack", "ChatWork", "Microsoft Teams",
+        "STORES", "BASE", "Bカート", "Shopify",
+        "WordPress", "Webflow",
+        "GA4", "Google Analytics", "Search Console", "Looker Studio",
+        "Ahrefs", "Tableau", "Power BI",
+    ]
+    text_lower = text.lower()
+    for tool in known_tools:
+        if tool.lower() in text_lower and tool not in tools:
+            tools.append(tool)
+
+    return list(dict.fromkeys(tools))
+
+
+def _extract_resume_career_history(text: str) -> List[str]:
+    """
+    履歴書の学歴・職歴テーブルから職歴エントリを抽出。
+    「2025 5 ZOOST株式会社（大阪市中央区）入社。現在に至る」のような形式を解析し、
+    「ZOOST株式会社 (2025年5月〜現在)」のような簡潔な文字列リストを返す。
+    """
+    entries = []
+    # パターン: 年 月 会社名（場所） 入社/設立 等
+    pattern = re.compile(
+        r'(\d{4})\s+(\d{1,2})\s+'
+        r'((?:株式会社|有限会社|合同会社|医療法人|社会福祉法人)?[^\n入設退転]{2,30}'
+        r'(?:株式会社|有限会社|合同会社)?)'
+        r'(?:（[^）]*）)?\s*'
+        r'(?:に?\s*)?(入社|設立|を設立|退社|退職|転籍)?'
+    )
+    # 「現在に至る」「在職中」の検出
+    is_current_pattern = re.compile(r'現在に至る|在職中|現職')
+
+    matches = list(pattern.finditer(text))
+    for i, m in enumerate(matches):
+        year = m.group(1)
+        month = m.group(2)
+        company = m.group(3).strip()
+        action = m.group(4) or ""
+
+        # 退社・退職は別エントリとしてスキップ（期間の終端として使う）
+        if action in ("退社", "退職"):
+            continue
+
+        # 会社名をクリーンアップ（括弧内の所在地を除去）
+        company_clean = re.sub(r'（[^）]*）', '', company).strip()
+        if not company_clean or len(company_clean) < 2:
+            continue
+
+        # 終了時期を推定: 次のエントリの年月 or 「現在に至る」
+        end_str = "現在"
+        # テキスト中でこのマッチの後に「現在に至る」があるかチェック
+        remaining = text[m.end():]
+        if i < len(matches) - 1:
+            next_m = matches[i + 1]
+            next_action = next_m.group(4) or ""
+            if next_action in ("退社", "退職"):
+                end_str = f"{next_m.group(1)}年{next_m.group(2)}月"
+            elif not is_current_pattern.search(remaining[:200]):
+                end_str = f"{next_m.group(1)}年{next_m.group(2)}月頃"
+        else:
+            # 最後のエントリの場合
+            if is_current_pattern.search(remaining[:200]):
+                end_str = "現在"
+
+        entry = f"{company_clean} ({year}年{month}月〜{end_str})"
+        entries.append(entry)
+
+    return entries
 
 
 def _extract_experience_years(text: str) -> int:
@@ -769,7 +999,9 @@ def _build_conditions(info: Dict, strengths: List[Tuple[str, str]],
     # --- full_text からの補完 ---
     if not conditions["age"]:
         conditions["age"] = _extract_age(full_text)
-    if not conditions["salary_min"]:
+    if not conditions.get("current_salary") and not conditions["salary_min"]:
+        conditions["salary_min"], conditions["salary_max"] = _extract_salary(full_text)
+    elif not conditions["salary_min"]:
         conditions["salary_min"], conditions["salary_max"] = _extract_salary(full_text)
     if not conditions["keywords"]:
         conditions["keywords"] = _extract_keywords_from_text(full_text)[:5]
@@ -909,7 +1141,44 @@ def load_candidate_text(text: str, filename: str = "テキスト入力") -> Opti
         if histories:
             candidate["info"]["職歴概要"] = f"{len(histories)}社経験"
 
+    # --- 拡張抽出: 年齢・性別・経歴略歴・人物要約 ---
+    # 年齢（文字列として保存、既存値を上書きしない）
+    if "年齢" not in candidate["info"]:
+        age_val = _extract_age(cleaned)
+        if age_val:
+            candidate["info"]["年齢"] = f"{age_val}歳"
+
+    # 性別
+    if "性別" not in candidate["info"]:
+        gender_val = _extract_gender(cleaned)
+        if gender_val:
+            candidate["info"]["性別"] = gender_val
+
+    # 経歴略歴（職務経歴要約 or 履歴書の職歴タイムライン）
+    if "経歴略歴" not in candidate["info"]:
+        career_summary_val = _extract_career_summary(cleaned)
+        if career_summary_val:
+            candidate["info"]["経歴略歴"] = career_summary_val
+
+    # 人物要約（自己PR）
+    if "人物要約" not in candidate["info"]:
+        self_pr_val = _extract_self_pr(cleaned)
+        if self_pr_val:
+            candidate["info"]["人物要約"] = self_pr_val
+
+    # 使用ツール抽出（タグに追加）
+    tools_from_text = _extract_tools_from_text(cleaned)
+
     tags = extract_all_tags(cleaned, candidate["info"])
+
+    # 使用ツールをスキルタグに統合（重複除去）
+    if tools_from_text:
+        existing_skills = set(tags.get("skills", []))
+        for tool in tools_from_text:
+            if tool not in existing_skills:
+                tags.setdefault("skills", []).append(tool)
+                existing_skills.add(tool)
+
     candidate["tags"] = tags
     candidate["conditions"] = _build_conditions(
         candidate["info"], candidate["strengths"], cleaned, tags

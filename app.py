@@ -493,8 +493,35 @@ def _filter_jobs_by_salary_proximity(jobs, current_salary):
     return filtered
 
 
-def _build_matching_excel(candidate, conditions, ranked_jobs):
-    """営業用Excel（2シート）を生成して BytesIO を返す"""
+def _filter_jobs_by_salary_min(jobs, salary_min):
+    """最低年収を厳守: 求人の年収上限が salary_min を下回る場合は完全除外。
+    salary_min が 0 の場合はフィルタしない。
+    年収情報がない求人・パースできない求人はそのまま残す。
+    月給の場合は *12 で年収換算済み（_parse_salary内で処理）。
+    """
+    if not salary_min or salary_min <= 0:
+        return jobs
+    filtered = []
+    for j in jobs:
+        sal_text = j.get("salary", "")
+        if not sal_text or not sal_text.strip():
+            filtered.append(j)  # 年収情報なし → 残す
+            continue
+        sal_range = _parse_salary(sal_text)
+        if sal_range[1] <= 0:
+            filtered.append(j)  # パースできない → 残す
+            continue
+        # 求人の年収上限が最低年収以上であれば残す
+        if sal_range[1] >= salary_min:
+            filtered.append(j)
+        # else: 求人の年収上限 < 最低年収 → 完全除外
+    return filtered
+
+
+def _build_matching_excel(candidate, conditions, ranked_jobs, exclude_text=""):
+    """営業用Excel（2シート）を生成して BytesIO を返す。
+    exclude_text が指定されている場合、除外ワードに該当する求人を除外する。
+    """
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
     buf = io.BytesIO()
@@ -502,11 +529,17 @@ def _build_matching_excel(candidate, conditions, ranked_jobs):
     tags = candidate.get("tags", {}) if candidate else {}
     profile = generate_candidate_profile(candidate) if candidate else {}
     cand_name = candidate.get("name", "候補者") if candidate else "候補者"
+    cid = candidate.get("id", 0) if candidate else 0
+
+    # 除外ワードで求人をフィルタ
+    if exclude_text and exclude_text.strip():
+        ranked_jobs = _filter_jobs_by_exclude_words(ranked_jobs, exclude_text)
 
     # --- Sheet1: 候補者プロフィール ---
     hard_skills = info.get("hard_skills", profile.get("hard_skills", []))
     soft_skills = info.get("soft_skills", profile.get("soft_skills", []))
     career_summary = info.get("career_summary", profile.get("career_summary", ""))
+    personality_memo = info.get("personality_memo", profile.get("personality_memo", ""))
     market_score = info.get("market_score", profile.get("market_score", 0))
     market_reasons = info.get("market_reasons", profile.get("market_reasons", []))
     certifications = info.get("certifications", tags.get("certifications", []))
@@ -515,14 +548,34 @@ def _build_matching_excel(candidate, conditions, ranked_jobs):
     experience_level = info.get("experience_level", tags.get("experience_level", ""))
     work_styles = info.get("work_styles", tags.get("work_styles", []))
 
+    # 新規フィールド（編集後の内容を反映）
+    age_str = info.get("年齢", "")
+    gender_str = info.get("性別", "")
+    career_hist = info.get("経歴略歴", "")
+    person_summary = info.get("人物要約", "")
+
     kws = conditions.get("keywords", []) if conditions else []
+    cur_sal = conditions.get("current_salary", 0) if conditions else 0
     sal_min = conditions.get("salary_min", "") if conditions else ""
     sal_max = conditions.get("salary_max", "") if conditions else ""
     loc = conditions.get("location", "") if conditions else ""
 
+    # 面談シート取得
+    sheets = get_interview_sheets(cid) if cid else []
+    interview_text = ""
+    if sheets:
+        for s in sheets:
+            created = s.get("created_at", "")[:16].replace("T", " ")
+            interview_text += f"[{created}]\n{s.get('sheet_content', '')}\n\n"
+
     profile_rows = [
         ("候補者名", cand_name),
+        ("年齢", age_str),
+        ("性別", gender_str),
+        ("経歴略歴", career_hist),
+        ("人物要約", person_summary),
         ("キャリア概要", career_summary),
+        ("人物タイプメモ", personality_memo),
         ("ハードスキル", "、".join(hard_skills) if isinstance(hard_skills, list) else str(hard_skills)),
         ("ソフトスキル", "、".join(soft_skills) if isinstance(soft_skills, list) else str(soft_skills)),
         ("保有資格", "、".join(certifications) if isinstance(certifications, list) else str(certifications)),
@@ -535,8 +588,12 @@ def _build_matching_excel(candidate, conditions, ranked_jobs):
         ("", ""),
         ("＜検索条件＞", ""),
         ("キーワード", "、".join(kws)),
+        ("現年収", f"{cur_sal}万円" if cur_sal else ""),
         ("希望年収", f"{sal_min}万〜{sal_max}万" if sal_min and sal_max else ""),
         ("希望勤務地", str(loc)),
+        ("", ""),
+        ("＜人事面談メモ＞", ""),
+        ("面談記録", interview_text.strip() if interview_text.strip() else "記録なし"),
     ]
     df_profile = pd.DataFrame(profile_rows, columns=["項目", "内容"])
 
@@ -994,8 +1051,19 @@ def show_candidate_popup(cand):
     career_change_reasons = info.get("career_change_reasons", profile.get("career_change_reasons", tags.get("career_change_reasons", [])))
     source_files = cand.get("source_files", [])
 
+    # ===== 基本情報（年齢・性別・経歴略歴・人物要約） =====
+    _age_str = info.get("年齢", "")
+    _gender_str = info.get("性別", "")
+    _career_hist = info.get("経歴略歴", "")
+    _person_summary = info.get("人物要約", "")
+
     # ===== ヘッダー =====
-    st.markdown(f"### {cand.get('name', '候補者')}")
+    _header_parts = [cand.get('name', '候補者')]
+    if _age_str:
+        _header_parts.append(f"（{_age_str}）")
+    if _gender_str:
+        _header_parts.append(f" {_gender_str}")
+    st.markdown(f"### {''.join(_header_parts)}")
     st.caption(f"登録: {cand.get('created_at', '')[:10]}")
 
     # ===== メインコンテンツ + AIサイドバー =====
@@ -1133,12 +1201,28 @@ def show_candidate_popup(cand):
             pref_parts.append(f"💭 動機: {'・'.join(career_change_reasons[:2])}")
         st.caption(" ・ ".join(pref_parts))
 
+        # 基本情報（編集可能）
+        st.markdown("#### 👤 基本情報（編集可能）")
+        _bi1, _bi2 = st.columns(2)
+        edited_age = _bi1.text_input("年齢", value=_age_str, key=f"pop_age_{cid}")
+        edited_gender = _bi2.text_input("性別", value=_gender_str, key=f"pop_gender_{cid}")
+
+        # 経歴略歴（編集可能）
+        st.markdown("#### 📜 経歴略歴（編集可能）")
+        edited_career_hist = st.text_area("経歴略歴", value=_career_hist or "", height=80,
+                                          key=f"pop_career_hist_{cid}", label_visibility="collapsed")
+
+        # 人物要約（編集可能）
+        st.markdown("#### 🧑 人物要約（編集可能）")
+        edited_person_summary = st.text_area("人物要約", value=_person_summary or "", height=80,
+                                              key=f"pop_person_summary_{cid}", label_visibility="collapsed")
+
         # 職務要約
         st.markdown("#### 📝 職務要約")
         st.markdown(career_summary or "情報なし")
 
         # 人物タイプメモ（編集可能）
-        st.markdown("#### 🧠 人物タイプメモ")
+        st.markdown("#### 🧠 人物タイプメモ（編集可能）")
         edited_memo = st.text_area("人物タイプメモ", value=personality_memo or "", height=80,
                                    key=f"popup_memo_{cid}", label_visibility="collapsed")
 
@@ -1212,10 +1296,21 @@ def show_candidate_popup(cand):
         or int(edited_sal_min) != int(sal_min)
         or int(edited_sal_max) != int(sal_max)
         or edited_location != _pref_loc
+        or edited_age != _age_str
+        or edited_gender != _gender_str
+        or edited_career_hist != (_career_hist or "")
+        or edited_person_summary != (_person_summary or "")
     )
     if _has_changes:
         if st.button("💾 変更を保存", key=f"pop_save_all_{cid}", type="primary"):
-            updated_info = {**info, "personality_memo": edited_memo}
+            updated_info = {
+                **info,
+                "personality_memo": edited_memo,
+                "年齢": edited_age,
+                "性別": edited_gender,
+                "経歴略歴": edited_career_hist,
+                "人物要約": edited_person_summary,
+            }
             updated_conditions = {
                 **conditions,
                 "keywords": _edited_kws,
@@ -1225,7 +1320,7 @@ def show_candidate_popup(cand):
                 "location": edited_location,
             }
             update_candidate(cid, info=updated_info, conditions=updated_conditions)
-            st.success("保存しました（キーワード・年収・勤務地も反映）")
+            st.success("保存しました")
             st.rerun()
 
     # 面談シート表示
@@ -1452,6 +1547,9 @@ if page == "candidate_search":
                 # 年収近接フィルタ（現年収と大きく乖離する求人を除外）
                 _cur_sal = conditions.get("current_salary", 0)
                 matched_jobs = _filter_jobs_by_salary_proximity(matched_jobs, _cur_sal)
+                # 最低年収厳守フィルタ（salary_min以下の求人を完全除外）
+                _sal_min = conditions.get("salary_min", 0)
+                matched_jobs = _filter_jobs_by_salary_min(matched_jobs, _sal_min)
 
                 if matched_jobs:
                     # メイン画面の勤務地選択もスコアリングに反映
@@ -1516,11 +1614,12 @@ if page == "candidate_search":
                         # --- Excel出力（2シート: 候補者情報 + 求人一覧） ---
                         _dl1, _dl2 = st.columns(2)
                         with _dl1:
+                            # CSV出力にも除外ワードを適用（dfはfiltered由来なので既に適用済みだが念のため）
                             csv_buf = io.StringIO()
                             df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
                             st.download_button("📄 CSV DL", csv_buf.getvalue(), "マッチング結果.csv", "text/csv", key="cs_csv_dl")
                         with _dl2:
-                            xlsx_buf = _build_matching_excel(active_cand, conditions, filtered)
+                            xlsx_buf = _build_matching_excel(active_cand, conditions, filtered, exclude_text=cs_exclude)
                             cand_name = active_cand.get("name", "候補者") if active_cand else "候補者"
                             st.download_button(
                                 "📊 Excel DL（営業用）", xlsx_buf,
