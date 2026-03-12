@@ -1325,6 +1325,9 @@ def show_candidate_popup(cand):
                 "location": edited_location,
             }
             update_candidate(cid, info=updated_info, conditions=updated_conditions)
+            # クイックアップロード状態をクリアして、全ページでDB最新データを参照
+            for _key in ["quick_cand", "quick_cand_files", "cs_quick_upload"]:
+                st.session_state.pop(_key, None)
             st.success("保存しました")
             st.rerun()
 
@@ -1468,9 +1471,14 @@ if page == "candidate_search":
         _default_name = quick_uploads[0].name.rsplit(".", 1)[0] if quick_uploads else "候補者"
         save_name = st.text_input("候補者名", value=_default_name, key="cs_save_name")
         if st.button("この候補者を保存", key="cs_save"):
+            _src_files = active_cand.get("source_files", [])
             save_candidate(save_name, active_cand.get("info", {}),
                            active_cand.get("strengths", []), conditions,
-                           tags=active_cand.get("tags", {}))
+                           tags=active_cand.get("tags", {}),
+                           source_files=_src_files)
+            # クイックアップロード状態をクリアして、DB保存済みデータを使うようにする
+            for _key in ["quick_cand", "quick_cand_files", "cs_quick_upload"]:
+                st.session_state.pop(_key, None)
             st.success(f"「{save_name}」を保存しました")
             st.rerun()
     elif sel_idx >= 0:
