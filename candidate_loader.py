@@ -116,7 +116,7 @@ _SKILL_KEYWORDS = [
     "GIFアニメーション", "バナー制作",
     # マーケティング
     "Webマーケティング", "デジタルマーケティング", "マーケター",
-    "Web広告", "SNS広告", "Google広告", "Meta広告", "リスティング広告",
+    "Web広告", "WEB広告", "SNS広告", "Google広告", "Meta広告", "リスティング広告",
     "SEO", "SEM", "LPO", "CRO", "MA", "CRM",
     "コンテンツマーケティング", "SNS運用", "広告運用",
     "ブランディング", "PR", "広報",
@@ -137,14 +137,16 @@ _SKILL_KEYWORDS = [
     "AI", "機械学習", "データサイエンス", "深層学習",
     # ビジネス
     "営業", "法人営業", "個人営業", "ルート営業", "新規開拓",
-    "コンサルタント", "コンサルティング",
+    "ソリューション営業", "ソリューションセールス",
+    "コンサルタント", "コンサルティング", "コンサルティング営業",
     "プロジェクトマネージャー", "PM", "ディレクター", "プロデューサー",
-    "企画", "事業企画", "経営企画", "商品企画",
+    "企画", "事業企画", "経営企画", "商品企画", "企画営業",
     "カスタマーサクセス", "CS", "カスタマーサポート",
     "見積作成", "提案書作成", "顧客折衝", "予算管理",
     "チームマネジメント", "メンバー育成", "進捗管理",
     "イベント企画", "展覧会",
     "商品企画", "販売促進", "広告出稿",
+    "テレアポ", "DX", "賃貸管理", "仲介",
     # 管理
     "マネジメント", "チームリーダー", "管理職", "事業部長", "部長",
     "人事", "採用", "総務", "経理", "労務", "法務", "財務", "経営管理",
@@ -165,6 +167,8 @@ _SKILL_KEYWORDS = [
     # ツール
     "Backlog", "Notion", "Slack", "ChatWork", "Microsoft Teams",
     "STORES", "BASE", "Bカート",
+    "Salesforce", "HubSpot", "LINE公式アカウント", "LINE公式",
+    "Tポイント",
     # EC
     "EC運営", "ECサイト構築", "オンラインショップ", "通販",
     # 分析
@@ -594,6 +598,7 @@ def _extract_career_summary(text: str) -> str:
     """
     職務経歴要約・経歴略歴を抽出（最大800文字）。
     職務経歴要約セクションがあればそれを優先、なければ履歴書の職歴タイムラインを構築。
+    さらに、CV中の会社名+期間パターンからも簡易タイムラインを生成。
     """
     # 職務経歴要約セクションを探す
     summary_headers = [
@@ -607,13 +612,11 @@ def _extract_career_summary(text: str) -> str:
     ]
     best_content = ""
     for header_pat in summary_headers:
-        # 次の■セクション or 空行2つ で区切る
         m = re.search(header_pat + r'[：:\s]*\n?([\s\S]*?)(?=\n\s*■|\n\s*\n\s*\n)', text)
         if m:
             content = m.group(1).strip()
             if content and len(content) > len(best_content):
                 best_content = content
-        # ■がない場合（末尾まで）
         if not best_content:
             m = re.search(header_pat + r'[：:\s]*\n?([\s\S]*?)$', text)
             if m:
@@ -623,10 +626,27 @@ def _extract_career_summary(text: str) -> str:
     if best_content:
         return best_content[:800]
 
-    # 学歴・職歴テーブルのエントリから簡易タイムラインを構築
+    # 履歴書の職歴テーブルから簡易タイムラインを構築
     career_entries = _extract_resume_career_history(text)
     if career_entries:
         timeline = " → ".join(career_entries[:5])
+        return timeline[:800]
+
+    # CV中の「会社名 年月〜年月」パターンから抽出
+    _SKIP_NAMES = {"期間", "業務内容", "項目", "内容", "年月", "備考"}
+    cv_company_pattern = re.compile(
+        r'((?:株式会社|有限会社|合同会社|医療法人)?[^\n]{2,25}'
+        r'(?:株式会社|有限会社|合同会社)?)'
+        r'\s+(\d{4})年\s*(\d{1,2})月\s*[〜~～\-–]'
+    )
+    cv_entries = []
+    for m in cv_company_pattern.finditer(text):
+        company = m.group(1).strip()
+        company = re.sub(r'（[^）]*）', '', company).strip()
+        if company and len(company) >= 2 and company not in _SKIP_NAMES:
+            cv_entries.append(f"{company} ({m.group(2)}年{m.group(3)}月〜)")
+    if cv_entries:
+        timeline = " → ".join(dict.fromkeys(cv_entries).keys())
         return timeline[:800]
 
     return ""
@@ -636,33 +656,66 @@ def _extract_self_pr(text: str) -> str:
     """
     自己PRセクションを抽出（最大800文字）。
     セクションヘッダーから次の■セクションまで、または末尾まで取得。
-    短すぎる場合は周辺テキストも含めて十分な分量を確保する。
+    テンプレートの列ヘッダー（「志望動機、アピールポイント、特技など」）はスキップ。
     """
+    # テンプレート列ヘッダーのパターン（履歴書の欄タイトル）
+    _TEMPLATE_HEADERS = re.compile(
+        r'志望動機[、,・]\s*(?:自己PR[、,・]\s*)?アピールポイント'
+        r'|アピールポイント[、,・]\s*特技'
+        r'|アピールポイントなど'
+        r'|特技など'
+    )
+
     pr_headers = [
         r'■\s*自己\s*PR',
         r'自己\s*PR',
         r'■\s*志望の動機',
-        r'志望の動機',
         r'■\s*アピールポイント',
-        r'アピールポイント',
     ]
     best_content = ""
     for header_pat in pr_headers:
-        # 次の■セクション or 空行2つ で区切る
-        m = re.search(header_pat + r'[：:\s]*\n?([\s\S]*?)(?=\n\s*■|\n\s*\n\s*\n)', text)
-        if m:
+        for m in re.finditer(header_pat + r'[：:\s]*\n?([\s\S]*?)(?=\n\s*■|\n\s*\n\s*\n)', text):
+            # テンプレート欄タイトルの一部としてマッチした場合はスキップ
+            match_start = max(0, m.start() - 20)
+            context = text[match_start:m.start() + 40]
+            if _TEMPLATE_HEADERS.search(context):
+                continue
             content = m.group(1).strip()
-            if content and len(content) > len(best_content):
+            if content and len(content) > 20 and len(content) > len(best_content):
                 best_content = content
         # ■がない場合（末尾まで）
         if not best_content:
             m = re.search(header_pat + r'[：:\s]*\n?([\s\S]*?)$', text)
             if m:
+                match_start = max(0, m.start() - 20)
+                context = text[match_start:m.start() + 40]
+                if _TEMPLATE_HEADERS.search(context):
+                    continue
                 content = m.group(1).strip()
-                if content and len(content) > len(best_content):
+                if content and len(content) > 20 and len(content) > len(best_content):
                     best_content = content
     if best_content:
         return best_content[:800]
+
+    # フォールバック: CV末尾の人物特性テキストを探す
+    # 「～する。」で終わる記述的な文章のブロックを探す
+    person_keywords = [
+        "専門用語をつかわず", "話すことで", "伝わる", "プレゼン",
+        "真摯に向き合い", "最善の対応", "素早く対応", "行動を起こ",
+        "レスポンスの早さ", "勉強を行い", "案件を獲得",
+        "部下より多く", "活気づけた",
+    ]
+    lines = text.split("\n")
+    pr_lines = []
+    seen = set()
+    for line in lines:
+        line = line.strip()
+        if line and line not in seen and any(kw in line for kw in person_keywords):
+            pr_lines.append(line)
+            seen.add(line)
+    if pr_lines:
+        return "\n".join(pr_lines)[:800]
+
     return ""
 
 
@@ -697,6 +750,7 @@ def _extract_tools_from_text(text: str) -> List[str]:
         "WordPress", "Webflow",
         "GA4", "Google Analytics", "Search Console", "Looker Studio",
         "Ahrefs", "Tableau", "Power BI",
+        "Salesforce", "HubSpot",
     ]
     text_lower = text.lower()
     for tool in known_tools:
@@ -706,60 +760,86 @@ def _extract_tools_from_text(text: str) -> List[str]:
     return list(dict.fromkeys(tools))
 
 
+def _wareki_to_seireki(era: str, year_num: int) -> int:
+    """和暦を西暦に変換"""
+    era_map = {
+        "令和": 2018, "平成": 1988, "昭和": 1925, "大正": 1911, "明治": 1867,
+    }
+    base = era_map.get(era, 0)
+    return base + year_num if base else 0
+
+
 def _extract_resume_career_history(text: str) -> List[str]:
     """
     履歴書の学歴・職歴テーブルから職歴エントリを抽出。
-    「2025 5 ZOOST株式会社（大阪市中央区）入社。現在に至る」のような形式を解析し、
-    「ZOOST株式会社 (2025年5月〜現在)」のような簡潔な文字列リストを返す。
+    西暦（2025 5）と和暦（平成19 4）の両方に対応。
+    「入社」「設立」等のアクションを含むエントリのみ抽出（学歴・資格は除外）。
     """
     entries = []
-    # パターン: 年 月 会社名（場所） 入社/設立 等
-    pattern = re.compile(
+
+    # 和暦パターン: 平成19 4 A株式会社 入社
+    wareki_pattern = re.compile(
+        r'(平成|令和|昭和)\s*(\d{1,2})\s+(\d{1,2})\s+'
+        r'((?:株式会社|有限会社|合同会社|医療法人|社会福祉法人)?[^\n入設退転]{2,30}'
+        r'(?:株式会社|有限会社|合同会社)?)'
+        r'(?:（[^）]*）)?\s*'
+        r'(?:に?\s*)?(入社|設立|を設立|退社|退職|転籍)'
+    )
+    # 西暦パターン: 2025 5 A株式会社 入社
+    seireki_pattern = re.compile(
         r'(\d{4})\s+(\d{1,2})\s+'
         r'((?:株式会社|有限会社|合同会社|医療法人|社会福祉法人)?[^\n入設退転]{2,30}'
         r'(?:株式会社|有限会社|合同会社)?)'
         r'(?:（[^）]*）)?\s*'
-        r'(?:に?\s*)?(入社|設立|を設立|退社|退職|転籍)?'
+        r'(?:に?\s*)?(入社|設立|を設立|退社|退職|転籍)'
     )
-    # 「現在に至る」「在職中」の検出
-    is_current_pattern = re.compile(r'現在に至る|在職中|現職')
+    is_current_pattern = re.compile(r'現在に至る|在職中|現職|退職予定')
 
-    matches = list(pattern.finditer(text))
-    for i, m in enumerate(matches):
-        year = m.group(1)
-        month = m.group(2)
-        company = m.group(3).strip()
-        action = m.group(4) or ""
+    # 統一フォーマット: (西暦year, month, company, action, match_end)
+    raw_entries = []
 
-        # 退社・退職は別エントリとしてスキップ（期間の終端として使う）
+    for m in wareki_pattern.finditer(text):
+        era = m.group(1)
+        era_year = int(m.group(2))
+        year = _wareki_to_seireki(era, era_year)
+        month = m.group(3)
+        company = m.group(4).strip()
+        action = m.group(5) or ""
+        raw_entries.append((year, month, company, action, m.end()))
+
+    if not raw_entries:
+        for m in seireki_pattern.finditer(text):
+            year = int(m.group(1))
+            month = m.group(2)
+            company = m.group(3).strip()
+            action = m.group(4) or ""
+            raw_entries.append((year, month, company, action, m.end()))
+
+    for i, (year, month, company, action, end_pos) in enumerate(raw_entries):
         if action in ("退社", "退職"):
             continue
 
-        # 会社名をクリーンアップ（括弧内の所在地を除去）
         company_clean = re.sub(r'（[^）]*）', '', company).strip()
         if not company_clean or len(company_clean) < 2:
             continue
 
-        # 終了時期を推定: 次のエントリの年月 or 「現在に至る」
         end_str = "現在"
-        # テキスト中でこのマッチの後に「現在に至る」があるかチェック
-        remaining = text[m.end():]
-        if i < len(matches) - 1:
-            next_m = matches[i + 1]
-            next_action = next_m.group(4) or ""
+        remaining = text[end_pos:]
+        if i < len(raw_entries) - 1:
+            next_year, next_month, _, next_action, _ = raw_entries[i + 1]
             if next_action in ("退社", "退職"):
-                end_str = f"{next_m.group(1)}年{next_m.group(2)}月"
+                end_str = f"{next_year}年{next_month}月"
             elif not is_current_pattern.search(remaining[:200]):
-                end_str = f"{next_m.group(1)}年{next_m.group(2)}月頃"
+                end_str = f"{next_year}年{next_month}月頃"
         else:
-            # 最後のエントリの場合
-            if is_current_pattern.search(remaining[:200]):
+            if is_current_pattern.search(remaining[:300]):
                 end_str = "現在"
 
         entry = f"{company_clean} ({year}年{month}月〜{end_str})"
         entries.append(entry)
 
-    return entries
+    # 重複除去（同じ会社名の重複エントリを排除）
+    return list(dict.fromkeys(entries))
 
 
 def _extract_experience_years(text: str) -> int:
@@ -1111,12 +1191,15 @@ def load_candidate_text(text: str, filename: str = "テキスト入力") -> Opti
         line = line.strip()
         if not line:
             continue
-        # 「項目：値」「項目: 値」パターン
-        m = re.match(r'^([^：:]+)[：:](.+)$', line)
+        # 箇条書き行はスキップ
+        if line.startswith(("・", "●", "▪", "■", "【", "-")):
+            continue
+        # 「項目：値」「項目: 値」パターン（キー名は2〜15文字）
+        m = re.match(r'^([^：:]{2,15})[：:](.+)$', line)
         if m:
             key = m.group(1).strip()
             val = m.group(2).strip()
-            if key and val and not _is_personal_info(key):
+            if key and val and not _is_personal_info(key) and len(candidate["info"]) < 30:
                 candidate["info"][key] = val
 
     # 「強み」「スキル」「経験」セクションの抽出
@@ -1197,6 +1280,9 @@ def load_candidate_pdf(filepath_or_bytes, filename: str = "PDF") -> Optional[Dic
     except ImportError:
         return None
 
+    import logging
+    logging.getLogger("pdfminer").setLevel(logging.ERROR)
+
     text_parts = []
     try:
         if isinstance(filepath_or_bytes, (str, os.PathLike)):
@@ -1205,18 +1291,24 @@ def load_candidate_pdf(filepath_or_bytes, filename: str = "PDF") -> Optional[Dic
             pdf = pdfplumber.open(io.BytesIO(filepath_or_bytes))
 
         for page in pdf.pages[:20]:  # 最大20ページ
-            page_text = page.extract_text()
-            if page_text:
-                text_parts.append(page_text)
+            try:
+                page_text = page.extract_text()
+                if page_text:
+                    text_parts.append(page_text)
+            except Exception:
+                pass
 
             # テーブルも抽出
-            tables = page.extract_tables()
-            for table in tables:
-                for row in table:
-                    if row:
-                        cells = [str(c).strip() for c in row if c]
-                        if cells:
-                            text_parts.append(" ".join(cells))
+            try:
+                tables = page.extract_tables()
+                for table in tables:
+                    for row in table:
+                        if row:
+                            cells = [str(c).strip() for c in row if c]
+                            if cells:
+                                text_parts.append(" ".join(cells))
+            except Exception:
+                pass
         pdf.close()
     except Exception:
         return None
