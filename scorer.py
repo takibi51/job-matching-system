@@ -265,12 +265,15 @@ def _parse_salary(salary_text: str) -> Tuple[int, int]:
         elif len(nums) == 1:
             return (nums[0], nums[0])
 
-    # 数字のみの場合
+    # 円単位の数値（万なし）を抽出
     plain_matches = re.findall(r'(\d+)', text)
     if plain_matches:
         nums = [int(n) for n in plain_matches]
-        # 大きい数字は円単位の可能性
+        # 大きい数字は円単位 → 万円に変換
         nums = [n // 10000 if n > 10000 else n for n in nums]
+        # 月給・月収の場合は年収に換算（×12）
+        if "月" in text:
+            nums = [n * 12 for n in nums]
         if nums:
             return (min(nums), max(nums))
 
