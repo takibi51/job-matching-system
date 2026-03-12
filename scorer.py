@@ -110,35 +110,44 @@ def score_job(job: Dict, conditions: Dict) -> Tuple[float, List[str]]:
 
     job_title = job.get("title", "").lower()
 
-    # === 1. キーワードマッチ (最大60点) ===
-    # 一致数ベース: 多く一致するほど高スコア（職種の適合度を最重視）
+    # === 1. キーワードマッチ (最大65点) ===
+    # タイトル一致を最重視: 求人タイトルにKWが含まれていれば大幅加点
     keywords = conditions.get("keywords", [])
     if keywords:
         matched_kw = []
         title_matched_kw = []
+        desc_only_kw = []
         for kw in keywords:
             kw_lower = kw.lower()
             if kw_lower in job_text:
                 matched_kw.append(kw)
                 if kw_lower in job_title:
                     title_matched_kw.append(kw)
+                else:
+                    desc_only_kw.append(kw)
 
         if matched_kw:
-            # 一致数ベーススコア: 1個=8点、上限48点
-            count_score = min(48, len(matched_kw) * 8)
-            # タイトル一致ボーナス: タイトルに含まれるKWごとに+3点、上限12点
-            title_bonus = min(12, len(title_matched_kw) * 3)
-            kw_score = min(60, count_score + title_bonus)
+            # タイトル一致: 1個=12点（職種の核心を示すため高配点）、上限36点
+            title_score = min(36, len(title_matched_kw) * 12)
+            # 説明文のみ一致: 1個=5点、上限20点
+            desc_score = min(20, len(desc_only_kw) * 5)
+            # 一致率ボーナス: 全KWの半数以上一致で+9点
+            ratio_bonus = 9 if len(matched_kw) >= max(2, len(keywords) * 0.5) else 0
+            kw_score = min(65, title_score + desc_score + ratio_bonus)
             score += kw_score
-            reasons.append(f"キーワード一致({len(matched_kw)}個): {', '.join(matched_kw[:5])}")
+            if title_matched_kw:
+                reasons.append(f"タイトル一致: {', '.join(title_matched_kw[:3])}")
+            if desc_only_kw:
+                reasons.append(f"スキル一致({len(desc_only_kw)}個): {', '.join(desc_only_kw[:4])}")
 
     # === 2. 勤務地マッチ (最大25点) ===
     # 優先順位: _locations(設定値) > location(希望勤務地) > リモート
+    # 複数の場合はOR条件
     job_location = job.get("location", "")
     desired_location = conditions.get("location", "")
     multi_locations = conditions.get("_locations", [])
 
-    # 設定された勤務地を最優先（複数の場合はOR条件）
+    # 設定された勤務地を最優先、なければ希望勤務地をフォールバック
     _active_locs = [l for l in multi_locations if l and l != "全国"] if multi_locations else []
     if not _active_locs and desired_location and desired_location != "全国":
         _active_locs = [desired_location]
@@ -156,12 +165,6 @@ def score_job(job: Dict, conditions: Dict) -> Tuple[float, List[str]]:
             reasons.append("リモートワーク可能")
         else:
             score += 0
-    else:
-        if any(kw in job_text for kw in REMOTE_KEYWORDS):
-            score += 10
-            reasons.append("リモートワーク可能")
-        else:
-            score += 5
 
     # === 3. 年収マッチ (最大10点) ===
     salary_min = conditions.get("salary_min", 0)

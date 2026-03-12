@@ -685,15 +685,19 @@ def _fit_tags(reasons_str):
 
 def _cand_to_conditions(cand):
     c = cand.get("conditions", {})
+    loc = c.get("location", "大阪")
+    # 希望勤務地を_locationsにもセット（スコアリングで勤務地優先に使用）
+    _locs = [loc] if loc and loc != "全国" else []
     return {
         "keywords": c.get("keywords", []),
-        "location": c.get("location", "大阪"),
+        "location": loc,
         "salary_min": c.get("salary_min", 0),
         "salary_max": c.get("salary_max", 0),
         "current_salary": c.get("current_salary", 0),
         "age": c.get("age", 0),
         "prefer_kansai": c.get("prefer_kansai", True),
         "extra_keywords": c.get("extra_keywords", []),
+        "_locations": _locs,
     }
 
 
