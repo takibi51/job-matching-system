@@ -697,24 +697,56 @@ def _extract_self_pr(text: str) -> str:
     if best_content:
         return best_content[:800]
 
-    # フォールバック: CV末尾の人物特性テキストを探す
-    # 「～する。」で終わる記述的な文章のブロックを探す
-    person_keywords = [
-        "専門用語をつかわず", "話すことで", "伝わる", "プレゼン",
-        "真摯に向き合い", "最善の対応", "素早く対応", "行動を起こ",
-        "レスポンスの早さ", "勉強を行い", "案件を獲得",
-        "部下より多く", "活気づけた",
+    # フォールバック1: CV中の人物特性・強みを表す記述を汎用的に探す
+    _person_trait_keywords = [
+        # コミュニケーション系
+        "プレゼン", "伝わる", "伝える", "説明力", "折衝", "交渉",
+        "コミュニケーション", "ヒアリング", "傾聴", "対話",
+        # 行動特性系
+        "素早く対応", "行動を起こ", "行動力", "フットワーク", "レスポンス",
+        "スピード", "迅速", "率先",
+        # 対人スキル系
+        "真摯に", "誠実", "信頼", "丁寧", "親身",
+        "顧客に提供", "最善の対応", "課題解決",
+        # 知識・スキル向上系
+        "勉強を行い", "自己研鑽", "スキルアップ", "資格を取得", "獲得し",
+        "学び", "習得",
+        # リーダーシップ系
+        "部下", "メンバー", "チームを", "組織を", "牽引", "統率",
+        "活気づけ", "マネジメント",
+        # 成果・実績系
+        "達成", "貢献", "実績", "受賞", "MVP", "改善",
+        "売上", "案件を獲得", "目標", "V字回復",
+        # 思考力系
+        "戦略的", "論理的", "分析", "企画力", "発想力", "創意工夫",
+        "提案力", "問題解決",
+        # 姿勢系
+        "粘り強", "コミット", "挑戦", "主体的", "積極的", "柔軟",
+        "最後まで", "やり遂げ",
     ]
     lines = text.split("\n")
     pr_lines = []
     seen = set()
     for line in lines:
         line = line.strip()
-        if line and line not in seen and any(kw in line for kw in person_keywords):
+        # 短すぎる行や見出し行はスキップ
+        if not line or len(line) < 15 or line in seen:
+            continue
+        if any(kw in line for kw in _person_trait_keywords):
             pr_lines.append(line)
             seen.add(line)
     if pr_lines:
-        return "\n".join(pr_lines)[:800]
+        return "\n".join(pr_lines[:10])[:800]
+
+    # フォールバック2: 「強み」セクション内の記述文を探す
+    strength_section = re.search(
+        r'(?:強み|得意|特徴|長所)[：:\s]*\n?([\s\S]*?)(?=\n\s*■|\n\s*\n\s*\n|$)',
+        text
+    )
+    if strength_section:
+        content = strength_section.group(1).strip()
+        if content and len(content) > 20:
+            return content[:800]
 
     return ""
 
@@ -1159,10 +1191,51 @@ def load_candidate_csv(filepath: str) -> Optional[Dict]:
                 candidate["strengths"].append((strength_name, strength_detail))
 
     full_text = "\n".join(full_lines)
-    tags = extract_all_tags(full_text, candidate["info"])
+
+    # --- CSV候補者でも人物要約・経歴略歴を生成 ---
+    info = candidate["info"]
+
+    # 経歴略歴: 入社日・現職企業・所属部署・役割から構築
+    if "経歴略歴" not in info:
+        career_parts = []
+        if info.get("現職企業"):
+            career_parts.append(info["現職企業"])
+        if info.get("所属部署"):
+            career_parts.append(f"{info['所属部署']}所属")
+        if info.get("役割") or info.get("役職"):
+            role = info.get("役割", "") or info.get("役職", "")
+            if role and role != "一般":
+                career_parts.append(role)
+        if info.get("入社日"):
+            career_parts.append(f"（{info['入社日']}）")
+        if career_parts:
+            info["経歴略歴"] = " ".join(career_parts)
+
+    # 人物要約: 強みの詳細テキストから構築
+    if "人物要約" not in info and candidate["strengths"]:
+        summary_parts = []
+        for name, detail in candidate["strengths"][:5]:
+            if detail and len(detail) > 10:
+                summary_parts.append(f"・{name}: {detail[:80]}")
+            elif name:
+                summary_parts.append(f"・{name}")
+        if summary_parts:
+            info["人物要約"] = "\n".join(summary_parts)
+
+    # full_text からも年齢・性別を補完
+    if "年齢" not in info:
+        age_val = _extract_age(full_text)
+        if age_val:
+            info["年齢"] = f"{age_val}歳"
+    if "性別" not in info:
+        gender_val = _extract_gender(full_text)
+        if gender_val:
+            info["性別"] = gender_val
+
+    tags = extract_all_tags(full_text, info)
     candidate["tags"] = tags
     candidate["conditions"] = _build_conditions(
-        candidate["info"], candidate["strengths"], full_text, tags
+        info, candidate["strengths"], full_text, tags
     )
     return candidate
 
