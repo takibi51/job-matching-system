@@ -1489,41 +1489,34 @@ if page == "candidate_search":
         active_cand = saved_cands[sel_idx]
         conditions = _cand_to_conditions(active_cand)
 
-    # --- 候補者変更の検知: 前回と異なる候補者が選択されたら検索結果と条件を完全リセット ---
+    # --- 候補者変更の検知: ウィジェットキーの世代番号で古い値を完全破棄 ---
     _current_cand_id = str(active_cand.get("id", active_cand.get("name", ""))) if active_cand else ""
     _prev_cand_id = st.session_state.get("_cs_prev_cand_id", "")
-    if _current_cand_id and _prev_cand_id and _prev_cand_id != _current_cand_id:
-        # 候補者が実際に切り替わった場合のみリセット
+    if _current_cand_id != _prev_cand_id:
         st.session_state["_cs_prev_cand_id"] = _current_cand_id
         st.session_state.pop("_cs_search_done", None)
-        for _wk in ["cs_smin", "cs_smax", "cs_age", "cs_loc", "cs_kw",
-                     "cs_jt", "cs_domain", "cs_roles", "cs_locs_filter", "cs_exclude",
-                     "cs_fscore", "cs_sort", "cs_fsal"]:
-            st.session_state.pop(_wk, None)
-        # 強制リロードで古いウィジェット値を完全に破棄
-        st.rerun()
-    # 初回選択時はIDを記録（rerunしない）
-    if _current_cand_id and not _prev_cand_id:
-        st.session_state["_cs_prev_cand_id"] = _current_cand_id
+        # 世代番号をインクリメント → 全ウィジェットのキーが変わり古い値が破棄される
+        st.session_state["_cs_gen"] = st.session_state.get("_cs_gen", 0) + 1
+    _g = st.session_state.get("_cs_gen", 0)
 
     if active_cand and conditions:
         mf_active = evaluate_market_fit(active_cand)
         star_txt = "⭐ " if mf_active["has_star"] else ""
         kw_tags = " ".join(f'`{k}`' for k in conditions.get("keywords", []))
         st.markdown(f"**{star_txt}{active_cand.get('name', '候補者')}** — {kw_tags}")
-        if st.button("👤 候補者詳細を開く", key="cs_cand_popup"):
+        if st.button("👤 候補者詳細を開く", key=f"cs_cand_popup_{_g}"):
             show_candidate_popup(active_cand)
 
         with st.expander("⚙️ 検索条件を調整", expanded=False):
             ac1, ac2, ac3 = st.columns(3)
-            salary_min = ac1.number_input("最低年収(万)", value=conditions.get("salary_min", 300), step=10, key="cs_smin")
-            salary_max = ac2.number_input("最高年収(万)", value=conditions.get("salary_max", 600), step=10, key="cs_smax")
-            age_val = ac3.number_input("年齢", value=max(conditions.get("age", 30), 18), min_value=18, max_value=70, key="cs_age")
+            salary_min = ac1.number_input("最低年収(万)", value=conditions.get("salary_min", 300), step=10, key=f"cs_smin_{_g}")
+            salary_max = ac2.number_input("最高年収(万)", value=conditions.get("salary_max", 600), step=10, key=f"cs_smax_{_g}")
+            age_val = ac3.number_input("年齢", value=max(conditions.get("age", 30), 18), min_value=18, max_value=70, key=f"cs_age_{_g}")
             _loc_default = conditions.get("location", "全国")
             _loc_defaults = [_loc_default] if _loc_default and _loc_default != "全国" and _loc_default in _LOCATION_OPTIONS else []
-            loc_vals = st.multiselect("勤務地（複数選択可・OR条件）", _LOCATION_OPTIONS, default=_loc_defaults, key="cs_loc")
+            loc_vals = st.multiselect("勤務地（複数選択可・OR条件）", _LOCATION_OPTIONS, default=_loc_defaults, key=f"cs_loc_{_g}")
             kw_str = st.text_area("キーワード（改行区切り）",
-                                  value="\n".join(conditions.get("keywords", [])), height=60, key="cs_kw")
+                                  value="\n".join(conditions.get("keywords", [])), height=60, key=f"cs_kw_{_g}")
             kws = [k.strip() for k in kw_str.split("\n") if k.strip()]
             loc_val = loc_vals[0] if len(loc_vals) == 1 else ("全国" if not loc_vals else loc_vals[0])
             conditions = {
@@ -1536,7 +1529,7 @@ if page == "candidate_search":
             }
 
         # --- 検索ボタン ---
-        if st.button("🔍 求人を検索", key="cs_search_btn", type="primary"):
+        if st.button("🔍 求人を検索", key=f"cs_search_btn_{_g}", type="primary"):
             st.session_state["_cs_search_done"] = True
 
         st.markdown("---")
@@ -1556,7 +1549,7 @@ if page == "candidate_search":
 
                 # フィルタ行: 求人種別 + 職域 + 職種
                 _cf1, _cf2 = st.columns(2)
-                jt_filter = _cf1.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key="cs_jt")
+                jt_filter = _cf1.radio("求人種別", ["すべて", "📌 契約中", "🌐 Web掲載"], horizontal=True, key=f"cs_jt_{_g}")
                 jt_val = None
                 if "契約中" in jt_filter:
                     jt_val = "contracted"
@@ -1564,13 +1557,13 @@ if page == "candidate_search":
                     jt_val = "web"
 
                 _cf3, _cf4 = st.columns(2)
-                cs_domain = _cf3.selectbox("職域で絞り込み", ["すべて"] + list(_JOB_PRESETS.keys()), key="cs_domain")
+                cs_domain = _cf3.selectbox("職域で絞り込み", ["すべて"] + list(_JOB_PRESETS.keys()), key=f"cs_domain_{_g}")
                 cs_roles = []
                 if cs_domain != "すべて":
-                    cs_roles = _cf4.multiselect("職種で絞り込み", _JOB_PRESETS.get(cs_domain, []), key="cs_roles")
+                    cs_roles = _cf4.multiselect("職種で絞り込み", _JOB_PRESETS.get(cs_domain, []), key=f"cs_roles_{_g}")
 
-                cs_locs = st.multiselect("勤務地で絞り込み（複数選択可・OR条件）", _LOCATION_OPTIONS, default=[], key="cs_locs_filter")
-                cs_exclude = st.text_input("🚫 除外ワード（スペース区切り）", placeholder="例: 派遣 契約社員 未経験", key="cs_exclude")
+                cs_locs = st.multiselect("勤務地で絞り込み（複数選択可・OR条件）", _LOCATION_OPTIONS, default=[], key=f"cs_locs_filter_{_g}")
+                cs_exclude = st.text_input("🚫 除外ワード（スペース区切り）", placeholder="例: 派遣 契約社員 未経験", key=f"cs_exclude_{_g}")
 
                 if stats["total_jobs"] == 0:
                     st.markdown('<div class="empty-state"><h3>求人データがまだありません</h3>'
@@ -1601,9 +1594,9 @@ if page == "candidate_search":
                             conditions["_locations"] = cs_locs
                         ranked = rank_jobs(matched_jobs, conditions, candidate=active_cand)
                         fc1, fc2, fc3 = st.columns(3)
-                        min_score = fc1.slider("最低スコア", 0, 100, 0, key="cs_fscore")
-                        sort_opt = fc2.selectbox("並べ替え", ["マッチ度順", "年収順（高→低）", "新着順"], key="cs_sort")
-                        require_salary = fc3.checkbox("年収あり", value=False, key="cs_fsal")
+                        min_score = fc1.slider("最低スコア", 0, 100, 0, key=f"cs_fscore_{_g}")
+                        sort_opt = fc2.selectbox("並べ替え", ["マッチ度順", "年収順（高→低）", "新着順"], key=f"cs_sort_{_g}")
+                        require_salary = fc3.checkbox("年収あり", value=False, key=f"cs_fsal_{_g}")
 
                         filtered = [j for j in ranked if j.get("score", 0) >= min_score
                                     and (not require_salary or j.get("salary", "").strip())]
@@ -1660,7 +1653,7 @@ if page == "candidate_search":
                             with _dl1:
                                 csv_buf = io.StringIO()
                                 df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
-                                st.download_button("📄 CSV DL", csv_buf.getvalue(), "マッチング結果.csv", "text/csv", key="cs_csv_dl")
+                                st.download_button("📄 CSV DL", csv_buf.getvalue(), "マッチング結果.csv", "text/csv", key=f"cs_csv_dl_{_g}")
                             with _dl2:
                                 xlsx_buf = _build_matching_excel(active_cand, conditions, filtered, exclude_text=cs_exclude)
                                 cand_name = active_cand.get("name", "候補者") if active_cand else "候補者"
@@ -1668,7 +1661,7 @@ if page == "candidate_search":
                                     "📊 Excel DL（営業用）", xlsx_buf,
                                     f"マッチング_{cand_name}.xlsx",
                                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    key="cs_xlsx_dl",
+                                    key=f"cs_xlsx_dl_{_g}",
                                 )
                     else:
                         st.info("条件に一致する求人がありません。")
