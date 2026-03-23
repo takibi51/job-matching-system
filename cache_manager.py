@@ -30,27 +30,96 @@ def _ensure_dir():
     os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-class _SyncConn:
-    """Turso接続ラッパー。commit()時にTursoへ自動同期する。
-    __getattr__で全メソッドを内部接続に委譲するため、
-    既存コード(conn.execute, conn.row_factory等)はそのまま動作する。
-    """
-    def __init__(self, conn):
-        object.__setattr__(self, '_conn', conn)
+# ============================================================
+# Turso互換レイヤー（libsql-clientのHTTP APIをsqlite3互換で使用）
+# ============================================================
 
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
+class _TursoRow:
+    """sqlite3.Row互換。dict(row)やrow["col"]でアクセス可能。"""
+    def __init__(self, columns, values):
+        self._columns = columns
+        self._values = list(values) if not isinstance(values, list) else values
+        self._data = dict(zip(columns, self._values))
 
-    def __setattr__(self, name, value):
-        if name == '_conn':
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._conn, name, value)
+    def __getitem__(self, key):
+        if isinstance(key, (int, slice)):
+            return self._values[key]
+        return self._data[key]
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+    def keys(self):
+        return self._columns
+
+
+class _TursoCursor:
+    """sqlite3.Cursor互換。execute/fetchone/fetchallをサポート。"""
+    def __init__(self, client):
+        self._client = client
+        self._columns = []
+        self._rows = []
+        self._idx = 0
+        self.lastrowid = 0
+        self.rowcount = -1
+
+    def execute(self, sql, params=None):
+        args = list(params) if params else []
+        result = self._client.execute(sql, args)
+        self._columns = list(result.columns) if result.columns else []
+        self._rows = list(result.rows) if result.rows else []
+        if hasattr(result, 'last_insert_rowid'):
+            self.lastrowid = result.last_insert_rowid or 0
+        if hasattr(result, 'rows_affected'):
+            self.rowcount = result.rows_affected or 0
+        self._idx = 0
+        return self
+
+    def fetchone(self):
+        if self._idx < len(self._rows):
+            row = self._rows[self._idx]
+            self._idx += 1
+            return _TursoRow(self._columns, row)
+        return None
+
+    def fetchall(self):
+        rows = [_TursoRow(self._columns, r) for r in self._rows[self._idx:]]
+        self._idx = len(self._rows)
+        return rows
+
+
+class _TursoConn:
+    """sqlite3.Connection互換。Turso HTTP APIをラップする。"""
+    def __init__(self, client):
+        self._client = client
+        self.row_factory = None  # 互換用（_TursoRowを常に使用）
+
+    def execute(self, sql, params=None):
+        cursor = _TursoCursor(self._client)
+        cursor.execute(sql, params)
+        return cursor
+
+    def executescript(self, sql):
+        """複数のSQL文をセミコロン区切りで実行。"""
+        stmts = [s.strip() for s in sql.split(';') if s.strip()]
+        for stmt in stmts:
+            try:
+                self._client.execute(stmt)
+            except Exception:
+                pass
 
     def commit(self):
-        self._conn.commit()
+        pass  # Turso HTTP APIは自動コミット
+
+    def close(self):
         try:
-            self._conn.sync()
+            self._client.close()
         except Exception:
             pass
 
@@ -66,20 +135,18 @@ def _get_conn():
             turso_url = st.secrets.get("turso", {}).get("url", "")
             turso_token = st.secrets.get("turso", {}).get("auth_token", "")
             if turso_url and turso_token:
-                import libsql_experimental as libsql
-                raw_conn = libsql.connect(
-                    CACHE_DB,
-                    sync_url=turso_url,
+                import libsql_client
+                client = libsql_client.create_client_sync(
+                    url=turso_url,
                     auth_token=turso_token,
                 )
-                raw_conn.sync()  # リモートから最新データを取得
-                conn = _SyncConn(raw_conn)  # commit時に自動sync
+                conn = _TursoConn(client)
         except Exception:
             pass
         # フォールバック: ローカルSQLite
         if conn is None:
             conn = sqlite3.connect(CACHE_DB)
-        conn.row_factory = sqlite3.Row
+            conn.row_factory = sqlite3.Row
         _init_db(conn)
         _local.conn = conn
     return _local.conn
