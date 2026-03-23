@@ -1,8 +1,9 @@
 """
-求人データベース管理（SQLite + FTS5）
+求人データベース管理（SQLite / Turso対応）
 - 求人データの永続保存・全文検索
 - URL重複排除
 - フィルタ・統計
+- Turso（クラウドSQLite）でデータを永続化
 """
 
 import sqlite3
@@ -29,16 +30,62 @@ def _ensure_dir():
     os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-def _get_conn() -> sqlite3.Connection:
+class _SyncConn:
+    """Turso接続ラッパー。commit()時にTursoへ自動同期する。
+    __getattr__で全メソッドを内部接続に委譲するため、
+    既存コード(conn.execute, conn.row_factory等)はそのまま動作する。
+    """
+    def __init__(self, conn):
+        object.__setattr__(self, '_conn', conn)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name, value):
+        if name == '_conn':
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._conn, name, value)
+
+    def commit(self):
+        self._conn.commit()
+        try:
+            self._conn.sync()
+        except Exception:
+            pass
+
+
+def _get_conn():
+    """DB接続を取得。Turso設定があればクラウドDB、なければローカルSQLite。"""
     if not hasattr(_local, "conn") or _local.conn is None:
         _ensure_dir()
-        _local.conn = sqlite3.connect(CACHE_DB)
-        _local.conn.row_factory = sqlite3.Row
-        _init_db(_local.conn)
+        conn = None
+        # Turso（クラウドDB）接続を試行
+        try:
+            import streamlit as st
+            turso_url = st.secrets.get("turso", {}).get("url", "")
+            turso_token = st.secrets.get("turso", {}).get("auth_token", "")
+            if turso_url and turso_token:
+                import libsql_experimental as libsql
+                raw_conn = libsql.connect(
+                    CACHE_DB,
+                    sync_url=turso_url,
+                    auth_token=turso_token,
+                )
+                raw_conn.sync()  # リモートから最新データを取得
+                conn = _SyncConn(raw_conn)  # commit時に自動sync
+        except Exception:
+            pass
+        # フォールバック: ローカルSQLite
+        if conn is None:
+            conn = sqlite3.connect(CACHE_DB)
+        conn.row_factory = sqlite3.Row
+        _init_db(conn)
+        _local.conn = conn
     return _local.conn
 
 
-def _init_db(conn: sqlite3.Connection):
+def _init_db(conn):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS jobs (
             url TEXT PRIMARY KEY,
@@ -52,28 +99,6 @@ def _init_db(conn: sqlite3.Connection):
             created_at TEXT DEFAULT '',
             updated_at TEXT DEFAULT ''
         );
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
-            title, company, location, salary, description,
-            content='jobs', content_rowid='rowid'
-        );
-
-        CREATE TRIGGER IF NOT EXISTS jobs_ai AFTER INSERT ON jobs BEGIN
-            INSERT INTO jobs_fts(rowid, title, company, location, salary, description)
-            VALUES (new.rowid, new.title, new.company, new.location, new.salary, new.description);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS jobs_ad AFTER DELETE ON jobs BEGIN
-            INSERT INTO jobs_fts(jobs_fts, rowid, title, company, location, salary, description)
-            VALUES ('delete', old.rowid, old.title, old.company, old.location, old.salary, old.description);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS jobs_au AFTER UPDATE ON jobs BEGIN
-            INSERT INTO jobs_fts(jobs_fts, rowid, title, company, location, salary, description)
-            VALUES ('delete', old.rowid, old.title, old.company, old.location, old.salary, old.description);
-            INSERT INTO jobs_fts(rowid, title, company, location, salary, description)
-            VALUES (new.rowid, new.title, new.company, new.location, new.salary, new.description);
-        END;
 
         -- 自動取得用キーワード管理
         CREATE TABLE IF NOT EXISTS collection_keywords (
@@ -171,19 +196,19 @@ def _init_db(conn: sqlite3.Connection):
     # jobs に job_type カラム追加（contracted=契約中 / web=Web掲載中）
     try:
         conn.execute("ALTER TABLE jobs ADD COLUMN job_type TEXT DEFAULT 'web'")
-    except sqlite3.OperationalError:
+    except Exception:
         pass  # 既に存在
 
     # saved_candidates に tags_json カラム追加
     try:
         conn.execute("ALTER TABLE saved_candidates ADD COLUMN tags_json TEXT DEFAULT '{}'")
-    except sqlite3.OperationalError:
+    except Exception:
         pass  # 既に存在
 
     # saved_candidates に source_files_json カラム追加
     try:
         conn.execute("ALTER TABLE saved_candidates ADD COLUMN source_files_json TEXT DEFAULT '[]'")
-    except sqlite3.OperationalError:
+    except Exception:
         pass  # 既に存在
 
     # collection_keywords に取得状態カラム追加
@@ -198,6 +223,31 @@ def _init_db(conn: sqlite3.Connection):
             pass
 
     conn.commit()
+
+    # FTS5（全文検索用仮想テーブル）: ローカルSQLiteのみ。Tursoでは非対応の場合あり
+    try:
+        conn.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
+                title, company, location, salary, description,
+                content='jobs', content_rowid='rowid'
+            );
+            CREATE TRIGGER IF NOT EXISTS jobs_ai AFTER INSERT ON jobs BEGIN
+                INSERT INTO jobs_fts(rowid, title, company, location, salary, description)
+                VALUES (new.rowid, new.title, new.company, new.location, new.salary, new.description);
+            END;
+            CREATE TRIGGER IF NOT EXISTS jobs_ad AFTER DELETE ON jobs BEGIN
+                INSERT INTO jobs_fts(jobs_fts, rowid, title, company, location, salary, description)
+                VALUES ('delete', old.rowid, old.title, old.company, old.location, old.salary, old.description);
+            END;
+            CREATE TRIGGER IF NOT EXISTS jobs_au AFTER UPDATE ON jobs BEGIN
+                INSERT INTO jobs_fts(jobs_fts, rowid, title, company, location, salary, description)
+                VALUES ('delete', old.rowid, old.title, old.company, old.location, old.salary, old.description);
+                INSERT INTO jobs_fts(rowid, title, company, location, salary, description)
+                VALUES (new.rowid, new.title, new.company, new.location, new.salary, new.description);
+            END;
+        """)
+    except Exception:
+        pass  # Turso環境ではFTS5が使えない場合がある（検索はLIKEで動作するため問題なし）
 
 
 # ============================================================
