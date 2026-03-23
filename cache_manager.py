@@ -136,8 +136,10 @@ def _get_conn():
             turso_token = st.secrets.get("turso", {}).get("auth_token", "")
             if turso_url and turso_token:
                 import libsql_client
+                # libsql:// → https:// に変換（WebSocketはStreamlit Cloudでブロックされるため）
+                http_url = turso_url.replace("libsql://", "https://")
                 client = libsql_client.create_client_sync(
-                    url=turso_url,
+                    url=http_url,
                     auth_token=turso_token,
                 )
                 conn = _TursoConn(client)
@@ -286,7 +288,7 @@ def _init_db(conn):
     ]:
         try:
             conn.execute(f"ALTER TABLE collection_keywords ADD COLUMN {col} TEXT DEFAULT {default}")
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
     conn.commit()
